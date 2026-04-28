@@ -4,7 +4,7 @@ const cacheService = require("../services/cacheService.js");
 const cache = require("../config/cache.js");
 const { fetchSixHourData } = require("../services/thingspeakService.js");
 const deviceState = require("../services/deviceStateService.js");
-const { startStatusCron } = require("./deviceStatusCron.js");
+const { startStatusCron, stopStatusCron } = require("./deviceStatusCron.js");
 
 // ─── #17 FIX: MQTT Message Deduplication ──────────────────────────────────
 // ORIGINAL BUG: If an MQTT message arrived twice (network retry), Firestore
@@ -30,6 +30,8 @@ const firestoreListeners = [];
 const POLL_INTERVAL = 60 * 1000; // 1 minute
 const BATCH_SIZE = 5; // How many concurrent requests to ThingSpeak to avoid ban
 const STATUS_CHECK_INTERVAL = 60 * 1000; // 1 minute cron job
+let telemetryPollTimer = null;
+let pollInProgress = false;
 
 async function getActiveDevices() {
     try {
@@ -215,6 +217,13 @@ async function processDevice(device) {
 }
 
 async function runPoll() {
+    if (pollInProgress) {
+        logger.warn("[TelemetryWorker] Previous poll still running, skipping overlap", { category: "telemetry" });
+        return;
+    }
+    pollInProgress = true;
+
+    try {
     const devices = await getActiveDevices();
     if (devices.length === 0) return;
 
@@ -229,10 +238,18 @@ async function runPoll() {
     }
 
     logger.info("Poll complete", { category: "telemetry" });
+    } finally {
+        pollInProgress = false;
+    }
 }
 
 // Start the worker
 function startWorker() {
+    if (telemetryPollTimer) {
+        logger.warn("[TelemetryWorker] startWorker called while already running; skipping duplicate start", { category: "telemetry" });
+        return;
+    }
+
     logger.info(`TelemetryWorker initialized, polling every ${POLL_INTERVAL}ms`, { category: "telemetry", interval: POLL_INTERVAL });
     
     // Run immediately once with error handling
@@ -241,7 +258,7 @@ function startWorker() {
     });
     
     // Then loop with error handling - wrap setInterval callback to catch promise rejections
-    setInterval(async () => {
+    telemetryPollTimer = setInterval(async () => {
         try {
             await runPoll();
         } catch (err) {
@@ -268,6 +285,12 @@ function setupGracefulShutdown() {
         logger.info(`[TelemetryWorker] Shutdown signal received (${signal})`, { signal });
         
         try {
+            if (telemetryPollTimer) {
+                clearInterval(telemetryPollTimer);
+                telemetryPollTimer = null;
+            }
+            stopStatusCron();
+
             // Unsubscribe from all Firestore listeners
             let cleanedCount = 0;
             for (const unsubscribeFn of firestoreListeners) {

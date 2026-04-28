@@ -85,23 +85,10 @@ const requireAuth = async (req, res, next) => {
 
         next();
     } catch (error) {
-        // ✅ FIX #3: Log full error server-side, send generic message to client
-        logger.error('[Auth] ❌ Token verification FAILED:');
-        logger.error('[Auth] Error name:', error.name);
-        logger.error('[Auth] Error message:', error.message);
-        logger.error('[Auth] Error code:', error.code);
-        logger.error('[Auth] Token (first 50 chars):', idToken ? idToken.substring(0, 50) + '...' : 'NONE');
-        logger.error('[Auth] Full error:', error);
-        
-        logger.error("Token verification failed", error, { category: 'auth' });
+        logger.error("Token verification failed", error, { category: 'auth', code: error.code, name: error.name });
 
-        // Send generic message (no details exposed)
         Sentry.captureException(error);
-        return res.status(401).json({ 
-            error: "Unauthorized",
-            details: error.message,
-            code: error.code
-        });
+        return res.status(401).json({ error: "Unauthorized" });
     }
 };
 

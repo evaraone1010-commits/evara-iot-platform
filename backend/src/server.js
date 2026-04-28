@@ -27,6 +27,10 @@ const { httpLogger, requestIdMiddleware, logger } = require("./config/pino.js");
 const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
 // ✅ HYBRID CACHING: Telemetry archive service
 const TelemetryArchiveService = require("./services/telemetryArchiveService.js");
+const TELEMETRY_CLEANUP_LOCK_KEY = "cron:telemetry-cleanup";
+let telemetryCleanupJob = null;
+let telemetryCleanupRunning = false;
+let mqttRuntime = null;
 
 // Validate environment before starting
 validateEnv();
@@ -39,6 +43,18 @@ Sentry.init({
 });
 
 const app = express();
+
+async function tryAcquireDistributedLock(key, ttlSeconds) {
+  if (!cache?.isRedisReady || !cache?.redis) return true;
+  try {
+    const lockValue = `${process.pid}-${Date.now()}`;
+    const acquired = await cache.redis.set(key, lockValue, "EX", ttlSeconds, "NX");
+    return acquired === "OK";
+  } catch (err) {
+    logger.warn({ key, error: err.message }, "[Lock] Failed acquiring distributed lock, proceeding to avoid stalling");
+    return true;
+  }
+}
 
 // ✅ PHASE 2: Task #14 - Lock CORS to specific domains (no *.railway.app wildcard)
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
@@ -148,6 +164,26 @@ const io = new Server(server, {
 // Prevents silent real-time breakage when running multiple instances without Redis
 // ============================================================================
 const pubSub = cache.getPubSub();
+const { admin, db } = require("./config/firebase.js");
+
+function initializeMqttIngestion() {
+  const shouldEnable = process.env.ENABLE_MQTT !== "false";
+  const hasConfig = !!(process.env.MQTT_BROKER_URL && process.env.MQTT_USERNAME && process.env.MQTT_PASSWORD);
+  if (!shouldEnable || !hasConfig) {
+    logger.warn("[MQTT] Ingestion disabled (missing config or ENABLE_MQTT=false)");
+    return;
+  }
+
+  try {
+    mqttRuntime = require("./services/mqttClient.js");
+    logger.info("[MQTT] Ingestion service initialized");
+  } catch (err) {
+    logger.error("[MQTT] Failed to initialize ingestion service:", err.message);
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1);
+    }
+  }
+}
 
 // Are we running multiple Railway instances?
 const isCluster = process.env.RAILWAY_REPLICA_COUNT 
@@ -370,8 +406,6 @@ io.use(async (socket, next) => {
 
 global.io = io;
 
-const { admin, db } = require("./config/firebase.js");
-
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth.token;
@@ -543,7 +577,9 @@ if (pubSub) {
                 // ✅ FIXED: Emit ONLY to room subscribers (those who passed checkOwnership)
                 io.to(`room:${deviceId}`).emit("device:update", payload);
             }
-        } catch (err) {}
+        } catch (err) {
+            logger.error("Redis pubsub parse error:", err);
+        }
     });
 }
 
@@ -572,16 +608,6 @@ app.use("/api/v1/admin", globalSaaSAuth, adminOnly, adminRoutes);
 // Node telemetry and analytics routes
 const nodesRoutes = require("./routes/nodes.routes.js");
 const evaratdsRoutes = require("./routes/evaratds.routes.js");
-
-// Health Check Endpoint
-app.get("/api/v1/health", (req, res) => {
-  res.status(200).json({
-    status: "healthy",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    env: process.env.NODE_ENV
-  });
-});
 
 app.use("/api/v1/nodes", globalSaaSAuth, nodesRoutes);
 app.use("/api/v1/evaratds", globalSaaSAuth, evaratdsRoutes);
@@ -642,6 +668,32 @@ app.get('/api/v1/health', (req, res) => {
   res.status(isHealthy ? 200 : 503).json(health);
 });
 
+app.get('/api/v1/health/live', (req, res) => {
+  res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()) + ' seconds'
+  });
+});
+
+app.get('/api/v1/health/ready', (req, res) => {
+  const firebaseReady = admin.apps.length > 0;
+  const redisReady = !isCluster || cache?.isRedisReady;
+  const mqttConfigured = !!(process.env.MQTT_BROKER_URL && process.env.MQTT_USERNAME && process.env.MQTT_PASSWORD);
+  const mqttReady = !mqttConfigured || global.mqttConnected === true;
+  const ready = firebaseReady && redisReady && mqttReady;
+
+  res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'not_ready',
+    timestamp: new Date().toISOString(),
+    checks: {
+      firebase: firebaseReady ? 'ok' : 'down',
+      redis: redisReady ? 'ok' : 'down',
+      mqtt: mqttConfigured ? (mqttReady ? 'ok' : 'down') : 'disabled'
+    }
+  });
+});
+
 // ✅ ISSUE #5: Register centralized error handler (must be AFTER all routes)
 // Handles Zod validation errors, AppError errors, and unknown errors
 // All controllers should use next(err) or throw AppError
@@ -674,18 +726,35 @@ try {
             const policy = TelemetryArchiveService.getRetentionPolicy();
             const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`; // 2:00 AM every day
             
-            schedule.scheduleJob(cleanupTime, async () => {
-                logger.info('🧹 [Scheduler] Starting daily telemetry cleanup');
-                const result = await TelemetryArchiveService.cleanupOldTelemetry();
-                
-                if (result.success) {
-                    logger.info(`✅ [Scheduler] Cleanup complete: ${result.devicesProcessed} devices, ${result.recordsDeleted} records deleted`);
-                } else {
-                    logger.error(`❌ [Scheduler] Cleanup failed: ${result.error}`);
+            telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
+                if (telemetryCleanupRunning) {
+                    logger.warn("[Scheduler] Previous telemetry cleanup still running, skipping overlapping run");
+                    return;
                 }
 
-                // Log database statistics
-                await TelemetryArchiveService.logCleanupStats();
+                const lockSeconds = 60 * 60; // 1 hour lock window for worst-case cleanup duration
+                const hasLock = await tryAcquireDistributedLock(TELEMETRY_CLEANUP_LOCK_KEY, lockSeconds);
+                if (!hasLock) {
+                    logger.info("[Scheduler] Skip telemetry cleanup; another instance owns lock");
+                    return;
+                }
+
+                telemetryCleanupRunning = true;
+                logger.info('🧹 [Scheduler] Starting daily telemetry cleanup');
+                try {
+                    const result = await TelemetryArchiveService.cleanupOldTelemetry();
+                    
+                    if (result.success) {
+                        logger.info(`✅ [Scheduler] Cleanup complete: ${result.devicesProcessed} devices, ${result.recordsDeleted} records deleted`);
+                    } else {
+                        logger.error(`❌ [Scheduler] Cleanup failed: ${result.error}`);
+                    }
+
+                    // Log database statistics
+                    await TelemetryArchiveService.logCleanupStats();
+                } finally {
+                    telemetryCleanupRunning = false;
+                }
             });
 
             logger.info(`✅ [Server] Telemetry cleanup scheduled daily at ${policy.cleanupHour}:${String(policy.cleanupMinute).padStart(2, '0')}`);
@@ -693,8 +762,11 @@ try {
             logger.error({ error: err.message }, '[Server] Telemetry cleanup scheduling failed');
         }
         
-        // Initialize our background worker
-        startWorker();
+        // Initialize our background worker if not in test mode
+        if (process.env.NODE_ENV !== "test") {
+            initializeMqttIngestion();
+            startWorker();
+        }
     });
 } catch (error) {
     logger.error("[Server] Error during startup:", error);
@@ -725,6 +797,12 @@ async function gracefulShutdown() {
         global.io.disconnectSockets();
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
+
+    // 3b. Stop scheduled jobs
+    if (telemetryCleanupJob) {
+        telemetryCleanupJob.cancel();
+        telemetryCleanupJob = null;
+    }
     
     // 4. Close Redis connection if available
     if (cache && cache.redis) {
@@ -734,6 +812,21 @@ async function gracefulShutdown() {
         } catch (err) {
             logger.error("[Server] Error closing Redis:", err.message);
         }
+    }
+
+    // 5. Close socket.io pub/sub clients
+    if (pubSub?.pub) {
+        try { await pubSub.pub.quit(); } catch (err) { logger.warn("[Server] Error closing Redis pub client:", err.message); }
+    }
+    if (pubSub?.sub) {
+        try { await pubSub.sub.quit(); } catch (err) { logger.warn("[Server] Error closing Redis sub client:", err.message); }
+    }
+
+    // 6. Close MQTT client if running
+    if (mqttRuntime?.mqttClient) {
+        await new Promise((resolve) => {
+            mqttRuntime.mqttClient.end(true, {}, () => resolve());
+        });
     }
     
     logger.debug("[Server] ✅ Graceful shutdown complete");
@@ -751,6 +844,9 @@ process.on("unhandledRejection", (reason, promise) => {
         promise: promise?.toString?.() || 'unknown'
     });
     Sentry.captureException(reason);
+    if (process.env.NODE_ENV === "production" && !isShuttingDown) {
+        gracefulShutdown().catch(() => process.exit(1));
+    }
 });
 
 process.on("uncaughtException", (err) => {
@@ -766,3 +862,5 @@ process.on("uncaughtException", (err) => {
         process.exit(1);
     }, 2000);
 });
+
+module.exports = server;

@@ -26,6 +26,17 @@ logs
 **/*.spec.js
 __tests__
 coverage
+test_*.js
+diagnose_*.js
+verify_*.js
+query_*.js
+check_*.js
+fix_*.js
+full_*diagnostic*.js
+simulate_*.js
+repair_*.js
+provision_*.js
+get_test_token.js
 
 # IDE / OS noise
 .DS_Store

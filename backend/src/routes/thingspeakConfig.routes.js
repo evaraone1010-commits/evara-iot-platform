@@ -9,6 +9,7 @@ const { db } = require("../config/firebase.js");
 const logger = require("../utils/logger.js");
 const AppError = require("../utils/AppError.js");
 const validate = require("../middleware/validate.js");
+const { checkOwnership } = require("../middleware/auth.middleware.js");
 const {
   fetchThingSpeakFieldsSchema,
   saveThingSpeakMetadataSchema,
@@ -17,7 +18,7 @@ const {
 /**
  * POST /api/v1/thingspeak/fetch-fields
  *
- * Fetches channel metadata from ThingSpeak (PUBLIC API - no auth needed)
+ * Fetches channel metadata from ThingSpeak for authenticated users
  * Returns available fields that the user can map to internal keys
  *
  * Body: { channelId: string, apiKey: string (optional) }
@@ -85,12 +86,13 @@ router.post(
         throw new AppError("Device not found", 404);
       }
 
-      const device = deviceDoc.data();
-      if (
-        req.user &&
-        req.user.uid !== device.owner_id &&
-        req.user.role !== "superadmin"
-      ) {
+      const isOwner = await checkOwnership(
+        req.user?.customer_id || req.user?.uid,
+        deviceId,
+        req.user?.role,
+        req.user?.community_id
+      );
+      if (!isOwner) {
         throw new AppError("Access denied", 403);
       }
 
@@ -132,12 +134,13 @@ router.get("/metadata/:deviceId", async (req, res, next) => {
       throw new AppError("Device not found", 404);
     }
 
-    const device = deviceDoc.data();
-    if (
-      req.user &&
-      req.user.uid !== device.owner_id &&
-      req.user.role !== "superadmin"
-    ) {
+    const isOwner = await checkOwnership(
+      req.user?.customer_id || req.user?.uid,
+      deviceId,
+      req.user?.role,
+      req.user?.community_id
+    );
+    if (!isOwner) {
       throw new AppError("Access denied", 403);
     }
 

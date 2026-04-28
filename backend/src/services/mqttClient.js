@@ -1,8 +1,9 @@
 const mqtt = require("mqtt");
 const { db, admin } = require("../config/firebase.js");
 const { z } = require("zod");
+const logger = require("../utils/logger.js");
 
-const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
+let MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
 
 // ============================================================================
 // ✅ TASK #2 — MQTT Connection State Tracking
@@ -55,6 +56,7 @@ function getSchema(deviceType) {
 // 1s, 2s, 4s, 8s, 16s, 32s, 1m, 2m, 3m, 4m, 5m (then stable at 5m)
 const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 let failureCount = 0;
+let reconnectTimer = null;
 
 const calculateBackoff = (failCount) => {
   const baseMs = 1000;
@@ -132,6 +134,10 @@ const mqttClient = mqtt.connect(MQTT_BROKER_URL, mqttOptions);
 // ✅ When MQTT connects successfully
 mqttClient.on('connect', () => {
   failureCount = 0;  // ✅ FIX #6: Reset counter on successful connect
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   mqttConnected = true;
   global.mqttConnected = true;
   logger.debug('[MQTT] ✅ Connected to broker (backoff reset)');
@@ -166,8 +172,12 @@ mqttClient.on('error', (err) => {
   
   logger.error(`[MQTT] ❌ Error (attempt ${failureCount}): ${err.message}. Retrying in ${backoffSec}s...`);
   
-  // ✅ FIX #6: Manually reconnect with exponential backoff
-  setTimeout(() => {
+  // ✅ FIX: Deduplicate reconnect timers to avoid timer storms
+  if (reconnectTimer) {
+    return;
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
     logger.debug(`[MQTT] 🔄 Attempting reconnection (backoff: ${backoffSec}s)`);
     mqttClient.reconnect();
   }, backoffMs);
@@ -182,6 +192,16 @@ mqttClient.on('close', () => {
 
 const lastUpdateMap = new Map();
 const UPDATE_THROTTLE_MS = 30000; // 30 seconds
+const LAST_UPDATE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+setInterval(() => {
+  const cutoff = Date.now() - LAST_UPDATE_TTL_MS;
+  for (const [deviceId, lastSeenAt] of lastUpdateMap.entries()) {
+    if (lastSeenAt < cutoff) {
+      lastUpdateMap.delete(deviceId);
+    }
+  }
+}, LAST_UPDATE_TTL_MS);
 
 // ============================================================================
 // ✅ TASK #5 + FIX #5 — Validated Message Handler with Publisher Authentication
@@ -264,7 +284,9 @@ mqttClient.on('message', async (topic, message) => {
           `[MQTT] Unauthorized publish attempt - device: ${deviceId}`,
           'warning'
         );
-      } catch (e) {}
+      } catch (e) {
+        logger.warn('Failed to log malformed metric via api:', e);
+      }
       
       return; // REJECT message
     }
