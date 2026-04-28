@@ -1,4 +1,5 @@
 const { db } = require("../config/firebase.js");
+const admin = require("firebase-admin"); // Added admin
 const { Filter } = require("firebase-admin/firestore");
 const cache = require("../config/cache.js");
 const telemetryCache = require("../services/cacheService.js");

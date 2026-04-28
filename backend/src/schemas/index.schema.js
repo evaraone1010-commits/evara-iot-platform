@@ -50,7 +50,7 @@ exports.createNodeSchema = z.object({
     
     // Connectivity / Status
     hardwareId: z.string().optional(),
-    status: z.string().optional(),
+
     
     // TDS specific
     tdsValue: z.number().optional(),
@@ -122,9 +122,6 @@ exports.updateNodeSchema = z.object({
     max_flow_rate: z.union([z.number(), z.string()]).optional(),
     maxFlowRate: z.union([z.number(), z.string()]).optional(),
     // Other
-    status: z.string().optional(),
-    tank_shape: z.string().optional(),
-    temperature_field: z.string().optional(),
     status: z.string().optional(),
     tank_shape: z.string().optional(),
     temperature_field: z.string().optional(),

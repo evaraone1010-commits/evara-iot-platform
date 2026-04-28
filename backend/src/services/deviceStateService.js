@@ -494,7 +494,6 @@ const recalculateAllDevicesStatus = async () => {
     
     if (updates.length > 0) {
       await Promise.all(updates);
-    } else {
     }
   } catch (err) {
     logger.error("[DeviceState] Status recalculation failed:", err.message);

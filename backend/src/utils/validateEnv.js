@@ -87,9 +87,9 @@ function validateEnv() {
     // Log security-relevant info in dev
     if (!isProd) {
         logger.debug(`[ENV] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
-        logger.debug(`[ENV] Redis configured: ${!!process.env.REDIS_URL ? 'Yes' : 'No (in-memory only)'}`);
-        logger.debug(`[ENV] MQTT configured: ${!!process.env.MQTT_BROKER_URL ? 'Yes' : 'No'}`);
-        logger.debug(`[ENV] Sentry configured: ${!!process.env.SENTRY_DSN ? 'Yes' : 'No'}`);
+        logger.debug(`[ENV] Redis configured: ${process.env.REDIS_URL ? 'Yes' : 'No (in-memory only)'}`);
+        logger.debug(`[ENV] MQTT configured: ${process.env.MQTT_BROKER_URL ? 'Yes' : 'No'}`);
+        logger.debug(`[ENV] Sentry configured: ${process.env.SENTRY_DSN ? 'Yes' : 'No'}`);
     }
 }
 

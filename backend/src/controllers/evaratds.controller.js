@@ -1,6 +1,6 @@
-const { db, admin } = require("../config/firebase.js");
-const { Filter } = require("firebase-admin/firestore");
+const { db } = require("../config/firebase.js");
 const { createNode, updateNode, deleteNode } = require("./admin.controller.js");
+const logger = require("../utils/logger.js");
 
 /**
  * GET /api/v1/evaratds

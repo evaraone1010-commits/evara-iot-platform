@@ -21,6 +21,7 @@
  */
 
 const { db } = require("../config/firebase.js");
+const logger = require("./logger.js");
 
 /**
  * Fire-and-forget audit logging

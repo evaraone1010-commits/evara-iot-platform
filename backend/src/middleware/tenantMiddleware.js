@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const { db } = require('../config/firebase');
 const { UnauthorizedError, ForbiddenError } = require('./errorHandler');
 
 class TenantMiddleware {

@@ -5,6 +5,8 @@
  * Run with: node backend/src/utils/testStatusCalculation.js
  */
 
+const logger = require('./logger.js');
+
 const calculateDeviceStatus = (lastUpdatedAt) => {
   const OFFLINE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
   

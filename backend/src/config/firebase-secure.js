@@ -32,12 +32,19 @@ if (fs.existsSync(serviceAccountPath)) {
 }
 
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccountConfig),
-    projectId: serviceAccountConfig.project_id,
-    databaseURL: process.env.FIREBASE_DATABASE_URL,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-  });
+  if (process.env.NODE_ENV === "test" || process.env.FIRESTORE_EMULATOR_HOST) {
+    admin.initializeApp({
+      projectId: "demo-test-project",
+      databaseURL: "http://127.0.0.1:9000?ns=demo-test-project"
+    });
+  } else {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccountConfig),
+      projectId: serviceAccountConfig.project_id,
+      databaseURL: process.env.FIREBASE_DATABASE_URL,
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

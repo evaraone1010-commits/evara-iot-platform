@@ -30,6 +30,7 @@
  */
 
 const { db } = require("../config/firebase.js");
+const logger = require("./logger.js");
 
 /**
  * Build versioned cache key

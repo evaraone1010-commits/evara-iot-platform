@@ -155,7 +155,7 @@ exports.getTDSTelemetry = async (req, res, next) => {
 
     // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
     // Defense in depth: check visibility in application layer
-    if (!checkDeviceVisibilityWithAudit(registry, id, req.user.uid, req.user.role)) {
+    if (!checkDeviceVisibilityWithAudit(deviceDoc, id, req.user.uid, req.user.role)) {
       logger.error(`[TDS-getTDSTelemetry] ❌ Visibility check failed`);
       throw new AppError("Device not visible to your account", 403);
     }
@@ -370,7 +370,7 @@ exports.getTDSHistory = async (req, res, next) => {
     }
 
     // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-    if (!checkDeviceVisibilityWithAudit(registry, id, req.user.uid, req.user.role)) {
+    if (!checkDeviceVisibilityWithAudit(deviceDoc, id, req.user.uid, req.user.role)) {
       throw new AppError("Device not visible to your account", 403);
     }
 
@@ -474,7 +474,7 @@ exports.getTDSConfig = async (req, res) => {
     }
 
     // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-    if (!checkDeviceVisibilityWithAudit(registry, id, req.user.uid, req.user.role)) {
+    if (!checkDeviceVisibilityWithAudit(deviceDoc, id, req.user.uid, req.user.role)) {
       return res.status(403).json({ error: "Device not visible to your account" });
     }
 
@@ -535,7 +535,7 @@ exports.updateTDSConfig = async (req, res) => {
     }
 
     // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-    if (!checkDeviceVisibilityWithAudit(registry, id, req.user.uid, req.user.role)) {
+    if (!checkDeviceVisibilityWithAudit(deviceDoc, id, req.user.uid, req.user.role)) {
       return res.status(403).json({ error: "Device not visible to your account" });
     }
 
@@ -564,7 +564,7 @@ exports.updateTDSConfig = async (req, res) => {
     await cache.flushPrefix("nodes_");
 
     // ✅ FIX #16: EMIT SOCKET EVENT FOR TDS CONFIG UPDATE
-    const registryData = registry?.data?.();
+    const registryData = deviceDoc?.data?.();
     const customerId = registryData?.customer_id || registryData?.customerId;
     if (customerId && global.io) {
       global.io.to(`customer:${customerId}`).emit("device:updated", {
@@ -613,7 +613,7 @@ exports.getTDSAnalytics = async (req, res) => {
     }
 
     // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-    if (!checkDeviceVisibilityWithAudit(registry, id, req.user.uid, req.user.role)) {
+    if (!checkDeviceVisibilityWithAudit(deviceDoc, id, req.user.uid, req.user.role)) {
       return res.status(403).json({ error: "Device not visible to your account" });
     }
 
