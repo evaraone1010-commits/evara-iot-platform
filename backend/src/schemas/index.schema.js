@@ -50,6 +50,7 @@ exports.createNodeSchema = z.object({
     
     // Connectivity / Status
     hardwareId: z.string().optional(),
+    status: z.string().optional(),
 
     
     // TDS specific
@@ -149,8 +150,15 @@ exports.createZoneSchema = z.object({
 exports.createCustomerSchema = z.object({
     body: z.object({
         display_name: z.string().min(1),
+        full_name: z.string().optional(),
         email: z.string().email().optional(),
-        phone: z.string().optional()
+        phone: z.string().optional(),
+        phone_number: z.string().optional(),
+        password: z.string().optional(),
+        confirmPassword: z.string().optional(),
+        role: z.string().optional(),
+        status: z.string().optional(),
+        regionFilter: z.string().optional()
     }).strict() // ✅ ISSUE #6: Reject unknown fields
 });
 

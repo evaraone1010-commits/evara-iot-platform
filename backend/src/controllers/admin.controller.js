@@ -21,7 +21,7 @@ function parseNumberSafely(val) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-exports.createZone = async (req, res) => {
+exports.createZone = async (req, res, next) => {
     try {
 
         const {
@@ -48,16 +48,27 @@ exports.createZone = async (req, res) => {
             created_at: new Date()
         };
 
-        const docRef = await db.collection("zones").add(zoneData);
+        const docRef = db.collection("zones").doc();
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.set(docRef, zoneData);
         
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'CREATE',
+            resource_type: 'zones',
+            resource_id: docRef.id,
+            timestamp: new Date(),
+            metadata: { zoneName, state, country },
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         // ✅ PHASE 2: Task #11 - Use version-based cache invalidation instead of flushPrefix
         await incrementCacheVersion("zones");
         await incrementCacheVersion("default");
-        
-        // ✅ PHASE 2: Task #12 - Log audit trail
-        logAudit(req.user.uid, 'CREATE', 'zones', docRef.id, { 
-            zoneName, state, country 
-        });
 
         return res.status(201).json({
             success: true,
@@ -71,14 +82,11 @@ exports.createZone = async (req, res) => {
             return res.status(error.statusCode).json(error.toJSON());
         }
         
-        req.log?.error({ error: error.message, stack: error.stack }, '[AdminController] Create zone error');
-        return res.status(500).json({
-            error: "Failed to create zone"
-        });
+        return next(error);
     }
 };
 
-exports.getZones = async (req, res) => {
+exports.getZones = async (req, res, next) => {
     try {
         // ─── #2 FIX: Tenant Isolation + Query Parameter Validation ──────────
         // ✅ PHASE 2: Task #11 - Use versioned cache keys instead of flushPrefix
@@ -116,12 +124,11 @@ exports.getZones = async (req, res) => {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Get zones error');
-        res.status(500).json({ error: "Failed to get zones" });
+        return next(error);
     }
 };
 
-exports.getZoneById = async (req, res) => {
+exports.getZoneById = async (req, res, next) => {
     try {
         const doc = await db.collection("zones").doc(req.params.id).get();
         if (!doc.exists) return res.status(404).json({ error: "Zone not found" });
@@ -159,11 +166,11 @@ exports.getZoneById = async (req, res) => {
         res.status(200).json({ id: doc.id, ...zoneData });
     } catch (error) {
         logger.error("[Zone] Get by ID failed:", error.message);
-        res.status(500).json({ error: "Failed to get zone" });
+        return next(error);
     }
 };
 
-exports.updateZone = async (req, res) => {
+exports.updateZone = async (req, res, next) => {
     try {
         const doc = await db.collection("zones").doc(req.params.id).get();
         if (!doc.exists) {
@@ -176,11 +183,25 @@ exports.updateZone = async (req, res) => {
         // Superadmin: allow all
         if (req.user.role === "superadmin") {
             const safeData = updateZoneSchema.parse(req.body);
-            await db.collection("zones").doc(req.params.id).update(safeData);
+            const docRef = db.collection("zones").doc(req.params.id);
+            const auditRef = db.collection("audit_logs").doc();
+            const batch = db.batch();
+
+            batch.update(docRef, safeData);
+            batch.set(auditRef, {
+                user_id: req.user.uid,
+                action: 'UPDATE',
+                resource_type: 'zones',
+                resource_id: req.params.id,
+                timestamp: new Date(),
+                metadata: safeData,
+                server_time: new Date().getTime()
+            });
+
+            await batch.commit();
+
             // ✅ PHASE 2: Task #11 - Use incrementCacheVersion instead of flushPrefix
             await incrementCacheVersion("zones");
-            // ✅ PHASE 2: Task #12 - Log audit trail
-            logAudit(req.user.uid, 'UPDATE', 'zones', req.params.id, safeData);
             return res.status(200).json({ success: true });
         }
 
@@ -200,20 +221,34 @@ exports.updateZone = async (req, res) => {
 
         // ✅ Owner verified: proceed with update
         const safeData = updateZoneSchema.parse(req.body);
-        await db.collection("zones").doc(req.params.id).update(safeData);
+        const docRef = db.collection("zones").doc(req.params.id);
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.update(docRef, safeData);
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'UPDATE',
+            resource_type: 'zones',
+            resource_id: req.params.id,
+            timestamp: new Date(),
+            metadata: safeData,
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         await incrementCacheVersion("zones");
-        logAudit(req.user.uid, 'UPDATE', 'zones', req.params.id, safeData);
         res.status(200).json({ success: true });
     } catch (error) {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Update zone error');
-        res.status(500).json({ error: "Failed to update zone" });
+        return next(error);
     }
 };
 
-exports.deleteZone = async (req, res) => {
+exports.deleteZone = async (req, res, next) => {
     try {
         const doc = await db.collection("zones").doc(req.params.id).get();
         if (!doc.exists) {
@@ -231,43 +266,75 @@ exports.deleteZone = async (req, res) => {
             }
         }
         
-        await db.collection("zones").doc(req.params.id).delete();
+        const docRef = db.collection("zones").doc(req.params.id);
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.delete(docRef);
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'DELETE',
+            resource_type: 'zones',
+            resource_id: req.params.id,
+            timestamp: new Date(),
+            metadata: {},
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         // ✅ PHASE 2: Task #11 - Use incrementCacheVersion instead of flushPrefix
         await incrementCacheVersion("zones");
-        // ✅ PHASE 2: Task #12 - Log audit trail
-        logAudit(req.user.uid, 'DELETE', 'zones', req.params.id);
         res.status(200).json({ success: true });
     } catch (error) {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Delete zone error');
-        res.status(500).json({ error: "Failed to delete zone" });
+        return next(error);
     }
 };
 
 // Customers
-exports.createCustomer = async (req, res) => {
+exports.createCustomer = async (req, res, next) => {
     try {
-        const { confirmPassword, ...customerData } = req.body;
-        const customer = { ...customerData, created_at: new Date() };
-        const doc = await db.collection("customers").add(customer);
+        const { confirmPassword, regionFilter, ...customerData } = req.body;
+        const customer = { 
+            ...customerData, 
+            zone_id: regionFilter || customerData.zone_id || null,
+            created_at: new Date() 
+        };
+        
+        const docRef = db.collection("customers").doc();
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.set(docRef, customer);
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'CREATE',
+            resource_type: 'customers',
+            resource_id: docRef.id,
+            timestamp: new Date(),
+            metadata: customerData,
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         // ✅ PHASE 2: Task #11 - Use incrementCacheVersion instead of flushPrefix
         await incrementCacheVersion("customers");
         await incrementCacheVersion("default");
-        // ✅ PHASE 2: Task #12 - Log audit trail
-        logAudit(req.user.uid, 'CREATE', 'customers', doc.id, customerData);
-        res.status(201).json({ success: true, id: doc.id });
+        
+        res.status(201).json({ success: true, id: docRef.id });
     } catch (error) {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Create customer error');
-        res.status(500).json({ error: "Failed to create customer" });
+        return next(error);
     }
 };
 
-exports.getCustomers = async (req, res) => {
+exports.getCustomers = async (req, res, next) => {
     try {
         const { zone_id, community_id, regionFilter, limit, cursor } = req.query;
 
@@ -292,15 +359,24 @@ exports.getCustomers = async (req, res) => {
         if (req.user.role !== "superadmin") {
             query = query.where("id", "==", req.user.customer_id || req.user.uid);
         } else {
-            // REMOVED orderBy("created_at") to avoid complex index requirements that cause silent failures
-
+            let hasEqualityFilter = false;
             if (zone_id && zone_id.trim() !== '') {
-                // Primary Filter
                 query = query.where("zone_id", "==", zone_id.trim());
-            } else if (regionFilter && regionFilter.trim() !== '') {
-                query = query.where("regionFilter", "==", regionFilter.trim());
-            } else if (community_id && community_id.trim() !== '') {
+                hasEqualityFilter = true;
+            }
+            if (community_id && community_id.trim() !== '') {
                 query = query.where("community_id", "==", community_id.trim());
+                hasEqualityFilter = true;
+            }
+            if (regionFilter && regionFilter.trim() !== '') {
+                query = query.where("region", "==", regionFilter.trim());
+                hasEqualityFilter = true;
+            }
+            
+            // ✅ FIX: Only order by created_at if there are no equality filters. 
+            // This bypasses the need for manual Composite Indexes in the Firebase Console.
+            if (!hasEqualityFilter) {
+                query = query.orderBy("created_at", "desc");
             }
         }
 
@@ -316,42 +392,16 @@ exports.getCustomers = async (req, res) => {
         const snapshot = await query.get();
         let customers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        // COMPREHENSIVE FALLBACK: Check alternative field names (zoneId, regionFilter) if no results for zone_id
-        if (req.user.role === "superadmin" && zone_id && customers.length === 0) {
-            logger.debug(`[AdminController] No customers found for zone_id: ${zone_id}, trying fallbacks...`);
-
-            // Try zoneId (camelCase)
-            const zoneIdSnapshot = await db.collection("customers").where("zoneId", "==", zone_id.trim()).limit(limitStr).get();
-            if (!zoneIdSnapshot.empty) {
-                logger.debug(`[AdminController] Found ${zoneIdSnapshot.size} customers via zoneId fallback`);
-                customers = [...customers, ...zoneIdSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))];
-            }
-
-            // Try regionFilter (legacy)
-            const regionSnapshot = await db.collection("customers").where("regionFilter", "==", zone_id.trim()).limit(limitStr).get();
-            if (!regionSnapshot.empty) {
-                logger.debug(`[AdminController] Found ${regionSnapshot.size} customers via regionFilter fallback`);
-                // Deduplicate by ID
-                const existingIds = new Set(customers.map(c => c.id));
-                regionSnapshot.docs.forEach(doc => {
-                    if (!existingIds.has(doc.id)) {
-                        customers.push({ id: doc.id, ...doc.data() });
-                        existingIds.add(doc.id);
-                    }
-                });
-            }
-        }
-
         logger.debug(`[AdminController] Successfully fetched ${customers.length} customers`);
         await cache.set(cacheKey, customers, 600); // 10 min
         res.status(200).json(customers);
     } catch (error) {
         logger.error("[AdminController] getCustomers CRITICAL ERROR:", error);
-        res.status(500).json({ error: "Failed to get customers" });
+        return next(error);
     }
 };
 
-exports.getCustomerById = async (req, res) => {
+exports.getCustomerById = async (req, res, next) => {
     try {
         // ─── #2 FIX: Tenant Isolation Check ─────────────────────────────────
         // Superadmins can view any customer
@@ -364,11 +414,11 @@ exports.getCustomerById = async (req, res) => {
         if (!doc.exists) return res.status(404).json({ error: "Customer not found" });
         res.status(200).json({ id: doc.id, ...doc.data() });
     } catch (error) {
-        res.status(500).json({ error: "Failed to get customer" });
+        return next(error);
     }
 };
 
-exports.updateCustomer = async (req, res) => {
+exports.updateCustomer = async (req, res, next) => {
     try {
         // ─── #2 FIX: Tenant Isolation Check ─────────────────────────────────
         if (req.user.role !== "superadmin" && req.params.id !== req.user.customer_id && req.params.id !== req.user.uid) {
@@ -376,45 +426,71 @@ exports.updateCustomer = async (req, res) => {
         }
         
         const safeData = updateCustomerSchema.parse(req.body);
-        await db.collection("customers").doc(req.params.id).update(safeData);
+        const docRef = db.collection("customers").doc(req.params.id);
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.update(docRef, safeData);
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'UPDATE',
+            resource_type: 'customers',
+            resource_id: req.params.id,
+            timestamp: new Date(),
+            metadata: safeData,
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         // ✅ PHASE 2: Task #11 - Use incrementCacheVersion instead of flushPrefix
         await incrementCacheVersion("customers");
-        // ✅ PHASE 2: Task #12 - Log audit trail
-        logAudit(req.user.uid, 'UPDATE', 'customers', req.params.id, safeData);
         res.status(200).json({ success: true });
     } catch (error) {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Update customer error');
-        res.status(500).json({ error: "Failed to update customer" });
+        return next(error);
     }
 };
 
-exports.deleteCustomer = async (req, res) => {
+exports.deleteCustomer = async (req, res, next) => {
     try {
         // ─── #2 FIX: Tenant Isolation Check ─────────────────────────────────
         if (req.user.role !== "superadmin") {
             throw new AppError("Access denied", 403);
         }
         
-        await db.collection("customers").doc(req.params.id).delete();
+        const docRef = db.collection("customers").doc(req.params.id);
+        const auditRef = db.collection("audit_logs").doc();
+        const batch = db.batch();
+
+        batch.delete(docRef);
+        batch.set(auditRef, {
+            user_id: req.user.uid,
+            action: 'DELETE',
+            resource_type: 'customers',
+            resource_id: req.params.id,
+            timestamp: new Date(),
+            metadata: {},
+            server_time: new Date().getTime()
+        });
+
+        await batch.commit();
+
         // ✅ PHASE 2: Task #11 - Use incrementCacheVersion instead of flushPrefix
         await incrementCacheVersion("customers");
-        // ✅ PHASE 2: Task #12 - Log audit trail
-        logAudit(req.user.uid, 'DELETE', 'customers', req.params.id);
         res.status(200).json({ success: true });
     } catch (error) {
         if (error instanceof AppError) {
             return res.status(error.statusCode).json(error.toJSON());
         }
-        req.log?.error({ error: error.message }, '[AdminController] Delete customer error');
-        res.status(500).json({ error: "Failed to delete customer" });
+        return next(error);
     }
 };
 
 // Nodes (Registry + Metadata Architecture)
-exports.createNode = async (req, res) => {
+exports.createNode = async (req, res, next) => {
     try {
         // Log complete request body immediately
         logger.debug(`\n[createNode] 📨 RECEIVED REQUEST BODY:`);
@@ -868,16 +944,11 @@ exports.createNode = async (req, res) => {
         logger.error(`[Device] Stack trace:`, error.stack);
         
         // Return error response with details for debugging
-        res.status(500).json({ 
-            error: "Failed to create device",
-            details: error.message,
-            code: error.code,
-            troubleshooting: "Check backend logs for detailed error information"
-        });
+        return next(error);
     }
 };
 
-exports.getNodes = async (req, res) => {
+exports.getNodes = async (req, res, next) => {
     try {
         logger.debug(`[AdminController] getNodes for user:`, req.user.uid, "role:", req.user.role);
         const nodesCacheKey = req.user.role === "superadmin"
@@ -887,7 +958,9 @@ exports.getNodes = async (req, res) => {
         const cachedNodes = await cache.get(nodesCacheKey);
         if (cachedNodes) return res.status(200).json(cachedNodes);
 
-        const limitStr = parseInt(req.query.limit) || 100;
+        const limitStr = Math.min(parseInt(req.query.limit) || 100, 200);
+        const cursor = req.query.cursor;
+        
         let query = db.collection("devices");
 
         if (req.user.role !== "superadmin") {
@@ -897,7 +970,17 @@ exports.getNodes = async (req, res) => {
                 .where("isVisibleToCustomer", "==", true);
         }
 
-        const snapshot = await query.limit(limitStr).get();
+        query = query.orderBy('created_at', 'desc').limit(limitStr);
+
+        if (cursor) {
+            const cursorDoc = await db.collection('devices').doc(cursor).get();
+            if (cursorDoc.exists) {
+                query = query.startAfter(cursorDoc);
+            }
+        }
+
+        const snapshot = await query.get();
+        const nextCursor = snapshot.docs.length === limitStr ? snapshot.docs[snapshot.docs.length - 1].id : null;
 
         // Batched Metadata Fetching (Eliminates N+1 reads)
         const typedGroups = {};
@@ -963,9 +1046,17 @@ exports.getNodes = async (req, res) => {
         logger.debug(`[AdminController] Final devices with analytics_template:`, devices.map(d => ({ id: d.id, type: d.device_type, template: d.analytics_template })));
 
         await cache.set(nodesCacheKey, devices, 300); // 5 min
-        res.status(200).json(devices);
+        res.status(200).json({
+            success: true,
+            data: devices,
+            pagination: {
+                count: devices.length,
+                nextCursor,
+                hasMore: !!nextCursor
+            }
+        });
     } catch (error) {
-        res.status(500).json({ error: "Failed to fetch devices" });
+        return next(error);
     }
 };
 
@@ -975,7 +1066,7 @@ exports.getNodes = async (req, res) => {
 // ✅ AUDIT FIX L2: Use shared resolveDevice utility (was duplicated in 3 controllers)
 const resolveDevice = require("../utils/resolveDevice.js");
 
-exports.updateNode = async (req, res) => {
+exports.updateNode = async (req, res, next) => {
     try {
         const deviceDoc = await resolveDevice(req.params.id);
         if (!deviceDoc || !deviceDoc.exists) return res.status(404).json({ error: "Device not found" });
@@ -1135,11 +1226,11 @@ exports.updateNode = async (req, res) => {
 
         res.status(200).json({ success: true });
     } catch (error) {
-        res.status(500).json({ error: "Failed to update metadata" });
+        return next(error);
     }
 };
 
-exports.deleteNode = async (req, res) => {
+exports.deleteNode = async (req, res, next) => {
     try {
         // Resolve node by doc id or hardware id (node_id/device_id)
         const deviceDoc = await resolveDevice(req.params.id);
@@ -1192,11 +1283,11 @@ exports.deleteNode = async (req, res) => {
         res.status(200).json({ success: true });
     } catch (error) {
         logger.error("[AdminController] deleteNode error:", error);
-        res.status(500).json({ error: "Failed to delete device" });
+        return next(error);
     }
 };
 
-exports.getDashboardSummary = async (req, res) => {
+exports.getDashboardSummary = async (req, res, next) => {
     try {
         if (!req.user) {
             return res.status(401).json({ error: "Unauthorized: Missing user information" });
@@ -1251,11 +1342,11 @@ exports.getDashboardSummary = async (req, res) => {
         res.status(200).json(result);
     } catch (error) {
         logger.error("[Dashboard] Failed to get summary:", error.message);
-        res.status(500).json({ error: "Failed to get dashboard summary" });
+        return next(error);
     }
 };
 
-exports.getHierarchy = async (req, res) => {
+exports.getHierarchy = async (req, res, next) => {
     try {
         const cacheKey = "admin_hierarchy";
         const cached = await cache.get(cacheKey);
@@ -1283,11 +1374,11 @@ exports.getHierarchy = async (req, res) => {
         res.status(200).json(zones);
     } catch (error) {
         logger.error("Hierarchy fetch error:", error);
-        res.status(500).json({ error: "Failed to get hierarchy" });
+        return next(error);
     }
 };
 
-exports.getAuditLogs = async (req, res) => {
+exports.getAuditLogs = async (req, res, next) => {
     try {
         // ✅ AUDIT FIX L8: Real audit log query with tenant isolation + pagination
         const isSuperAdmin = req.user.role === "superadmin";
@@ -1326,11 +1417,11 @@ exports.getAuditLogs = async (req, res) => {
         });
     } catch (error) {
         logger.error("[AdminController] getAuditLogs error:", error.message);
-        res.status(500).json({ error: "Failed to get audit logs" });
+        return next(error);
     }
 };
 
-exports.getZoneStats = async (req, res) => {
+exports.getZoneStats = async (req, res, next) => {
     try {
         const cacheKey = "zone_stats_all";
         const cached = await cache.get(cacheKey);
@@ -1380,7 +1471,7 @@ exports.getZoneStats = async (req, res) => {
         res.status(200).json(zoneStats);
     } catch (error) {
         logger.error("[AdminController] getZoneStats error:", error);
-        res.status(500).json({ error: "Failed to get zone statistics" });
+        return next(error);
     }
 };
 
@@ -1389,7 +1480,7 @@ exports.getZoneStats = async (req, res) => {
  * Combines Summary, Zones, and Nodes into ONE cached response.
  * Drastically reduces frontend network overhead.
  */
-exports.getDashboardInit = async (req, res) => {
+exports.getDashboardInit = async (req, res, next) => {
     try {
         const isSuperAdmin = req.user.role === "superadmin";
         const cacheKey = `dashboard_init_${isSuperAdmin ? 'admin' : req.user.customer_id || req.user.uid}`;
@@ -1413,7 +1504,7 @@ exports.getDashboardInit = async (req, res) => {
         res.status(200).json(result);
     } catch (error) {
         logger.error("[Init] Aggregate failure:", error.message);
-        res.status(500).json({ error: "Aggregate fetch failed" });
+        return next(error);
     }
 };
 
@@ -1421,7 +1512,7 @@ exports.getDashboardInit = async (req, res) => {
  * SYSTEM CONFIGURATION (Superadmin only)
  * Stores global settings like sampling intervals and firmware policies.
  */
-exports.getSystemConfig = async (req, res) => {
+exports.getSystemConfig = async (req, res, next) => {
     try {
         const doc = await db.collection("settings").doc("system_config").get();
         if (!doc.exists) {
@@ -1443,11 +1534,11 @@ exports.getSystemConfig = async (req, res) => {
         res.status(200).json(doc.data());
     } catch (error) {
         logger.error("[AdminController] getSystemConfig error:", error);
-        res.status(500).json({ error: "Failed to get system configuration" });
+        return next(error);
     }
 };
 
-exports.updateSystemConfig = async (req, res) => {
+exports.updateSystemConfig = async (req, res, next) => {
     try {
         const config = req.body;
         await db.collection("settings").doc("system_config").set({
@@ -1462,7 +1553,7 @@ exports.updateSystemConfig = async (req, res) => {
         res.status(200).json({ success: true, message: "System configuration updated" });
     } catch (error) {
         logger.error("[AdminController] updateSystemConfig error:", error);
-        res.status(500).json({ error: "Failed to update system configuration" });
+        return next(error);
     }
 };
 
@@ -1475,7 +1566,7 @@ exports.updateSystemConfig = async (req, res) => {
  * Superadmin toggles whether a device is visible to the customer (Image 1 toggle)
  * Body: { "isVisibleToCustomer": true | false }
  */
-exports.updateDeviceVisibility = async (req, res) => {
+exports.updateDeviceVisibility = async (req, res, next) => {
     try {
         const { id } = req.params;
         const { isVisibleToCustomer } = req.body;
@@ -1534,7 +1625,7 @@ exports.updateDeviceVisibility = async (req, res) => {
         return res.status(200).json({ success: true, isVisibleToCustomer });
     } catch (error) {
         logger.error("[AdminController] updateDeviceVisibility error:", error);
-        return res.status(500).json({ error: "Failed to update device visibility" });
+        return next(error);
     }
 };
 
@@ -1543,7 +1634,7 @@ exports.updateDeviceVisibility = async (req, res) => {
  * Superadmin controls which analytics parameters are visible to the customer (Image 2 toggles)
  * Body: { "customer_config": { "showAlerts": false, "showConsumption": true, ... } }
  */
-exports.updateDeviceParameters = async (req, res) => {
+exports.updateDeviceParameters = async (req, res, next) => {
     try {
         const { id } = req.params;
         const { customer_config } = req.body;
@@ -1609,6 +1700,6 @@ exports.updateDeviceParameters = async (req, res) => {
         return res.status(200).json({ success: true, customer_config });
     } catch (error) {
         logger.error("[AdminController] updateDeviceParameters error:", error);
-        return res.status(500).json({ error: "Failed to update device parameters" });
+        return next(error);
     }
 };

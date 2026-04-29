@@ -1,6 +1,27 @@
 const winston = require('winston');
 const Sentry = require('@sentry/node');
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+const transports = [
+  new winston.transports.Console({
+    format: isProduction
+      ? winston.format.json()           // structured JSON for CloudWatch
+      : winston.format.combine(
+          winston.format.colorize(),
+          winston.format.simple()       // human-readable locally
+        )
+  })
+];
+
+// ONLY add file transports in local dev
+if (!isProduction) {
+  transports.push(
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' })
+  );
+}
+
 // Configure Winston logger
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -10,21 +31,8 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   defaultMeta: { service: 'evara-backend' },
-  transports: [
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
-  ],
+  transports
 });
-
-// Add console transport for development
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.simple()
-    )
-  }));
-}
 
 // Structured logging methods
 const structuredLogger = {

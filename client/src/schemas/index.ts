@@ -50,6 +50,7 @@ export const customerSchema = z
     phone_number: z.string().optional(),
     role: z.enum(["customer", "distributor", "operator", "viewer"]),
     status: z.enum(["active", "pending", "suspended", "inactive"]),
+    regionFilter: z.string().optional(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords don't match",

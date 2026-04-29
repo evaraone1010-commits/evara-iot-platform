@@ -448,7 +448,7 @@ exports.getTDSHistory = async (req, res, next) => {
 /**
  * Get TDS device configuration
  */
-exports.getTDSConfig = async (req, res) => {
+exports.getTDSConfig = async (req, res, next) => {
   try {
     const { id: paramId } = req.params;
 
@@ -500,15 +500,14 @@ exports.getTDSConfig = async (req, res) => {
       sensor_field_mapping: metadata.sensor_field_mapping || {},
     });
   } catch (error) {
-    logger.error("[TDSController] Error fetching config:", error);
-    res.status(500).json({ error: "Failed to fetch configuration" });
+    next(error);
   }
 };
 
 /**
  * Update TDS device configuration
  */
-exports.updateTDSConfig = async (req, res) => {
+exports.updateTDSConfig = async (req, res, next) => {
   try {
     const { id: paramId } = req.params;
     const { minThreshold, maxThreshold, latitude, longitude } = req.body;
@@ -578,15 +577,14 @@ exports.updateTDSConfig = async (req, res) => {
 
     res.status(200).json({ success: true, message: "Configuration updated" });
   } catch (error) {
-    logger.error("[TDSController] Error updating config:", error);
-    res.status(500).json({ error: "Failed to update configuration" });
+    next(error);
   }
 };
 
 /**
  * Get TDS analytics summary
  */
-exports.getTDSAnalytics = async (req, res) => {
+exports.getTDSAnalytics = async (req, res, next) => {
   try {
     const { id: paramId } = req.params;
     const { hours = 24 } = req.query;
@@ -672,7 +670,6 @@ exports.getTDSAnalytics = async (req, res) => {
 
     res.status(200).json(analytics);
   } catch (error) {
-    logger.error("[TDSController] Error fetching analytics:", error);
-    res.status(500).json({ error: "Failed to fetch analytics" });
+    next(error);
   }
 };

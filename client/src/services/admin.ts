@@ -141,8 +141,27 @@ class AdminService {
   }
 
   async getNodes(): Promise<any[]> {
-    const response = await api.get("/admin/nodes");
-    return response.data;
+    const allNodes: any[] = [];
+    let cursor: string | null = null;
+
+    do {
+      const params: any = { limit: '100' };
+      if (cursor) params.cursor = cursor;
+
+      const response = await api.get("/admin/nodes", { params });
+      const responseData = response.data;
+
+      if (Array.isArray(responseData)) {
+        allNodes.push(...responseData);
+        break;
+      } else {
+        const { data, pagination } = responseData;
+        allNodes.push(...(data || []));
+        cursor = pagination?.hasMore ? pagination.nextCursor : null;
+      }
+    } while (cursor !== null);
+
+    return allNodes;
   }
 
   /**

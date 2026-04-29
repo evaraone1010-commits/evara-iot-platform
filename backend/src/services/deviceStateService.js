@@ -388,6 +388,7 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
       refilledTodayLitres: telemetryData.refilledTodayLitres || 0,
       estMinutesToEmpty: telemetryData.estMinutesToEmpty || null,
       estMinutesToFull: telemetryData.estMinutesToFull || null,
+      raw_data: telemetryData.raw_data || null,
     };
 
     if (feeds && feeds.length > 0) {
@@ -443,6 +444,9 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
     });
 
     const updateRegistry = db.collection("devices").doc(deviceId).update(registryUpdateObj);
+
+    // Save to Redis cache for fast API retrieval (decoupled from ThingSpeak)
+    await cache.set(`telemetry:${deviceId}`, updatePayload.telemetry_snapshot, 120);
 
     await Promise.all([updateMetadata, updateRegistry]);
     logger.debug(`[DeviceState] ✅ Updated telemetry for ${deviceId}: status=${telemetryData.status}, last_seen=${now}`);

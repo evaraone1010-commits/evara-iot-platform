@@ -33,20 +33,37 @@ const STATUS_CHECK_INTERVAL = 60 * 1000; // 1 minute cron job
 let telemetryPollTimer = null;
 let pollInProgress = false;
 
-async function getActiveDevices() {
-    try {
-        // SaaS Architecture: Security & Performance
-        // 1. Check Cache first (invalidated automatically on admin updates via prefix 'nodes_')
-        const cachedList = await cache.get("nodes:polling:list");
-        if (cachedList) return cachedList;
+const CHUNK_SIZE = 200;
 
-        logger.info("Cache miss: Loading active device list from Firestore...", { category: "telemetry" });
-        
-        // ✅ AUDIT FIX M2: Only poll devices that might have fresh data
-        // OFFLINE_STOPPED / DECOMMISSIONED devices have no ThingSpeak data to fetch
-        const snapshot = await db.collection("devices")
+async function* getActiveDevicesInChunks() {
+    // 1. Try to get from Cache to save 144M Firestore reads/day
+    try {
+        const cachedList = await cache.get("nodes:polling:list");
+        if (cachedList && Array.isArray(cachedList)) {
+            logger.info(`Cache hit: Using cached active device list (${cachedList.length} devices)`, { category: "telemetry" });
+            for (let i = 0; i < cachedList.length; i += CHUNK_SIZE) {
+                yield cachedList.slice(i, i + CHUNK_SIZE);
+            }
+            return;
+        }
+    } catch (err) {
+        logger.warn("Failed to read from cache, falling back to Firestore", { error: err.message, category: "telemetry" });
+    }
+
+    logger.info("Cache miss: Loading active device list from Firestore in chunks...", { category: "telemetry" });
+    const allDevicesToCache = [];
+    let lastDoc = null;
+    
+    while (true) {
+        let query = db.collection("devices")
             .where("status", "not-in", ["OFFLINE_STOPPED", "DECOMMISSIONED"])
-            .get();
+            .limit(CHUNK_SIZE);
+        
+        if (lastDoc) query = query.startAfter(lastDoc);
+
+        const snapshot = await query.get();
+        if (snapshot.empty) break;
+
         const typedGroups = {};
         const registryDataMap = {};
 
@@ -66,7 +83,6 @@ async function getActiveDevices() {
                 const ids = typedGroups[type];
                 const typeLower = type.toLowerCase();
                 
-                // Strategy 1: Try direct document lookup by Registry ID (Modern/Standard)
                 const primaryRefs = ids.map(id => db.collection(typeLower).doc(id));
                 const primaryMetas = await db.getAll(...primaryRefs);
                 
@@ -81,7 +97,6 @@ async function getActiveDevices() {
                     }
                 });
                 
-                // Strategy 2: Fallback to Hardware/Node ID for legacy or manually provisioned devices
                 if (missingIds.length > 0) {
                     const secondaryRefs = [];
                     const secondaryIdMap = [];
@@ -113,7 +128,7 @@ async function getActiveDevices() {
             for (const item of batch) {
                 const { id, meta } = item;
                 if (meta.thingspeak_channel_id && meta.thingspeak_read_api_key) {
-                    devices.push({
+                    const mappedDevice = {
                         ...registryDataMap[id],
                         ...meta,
                         id: id,
@@ -125,17 +140,24 @@ async function getActiveDevices() {
                         capacity: meta.tank_size || 0,
                         lastUpdatedAt: meta.lastUpdatedAt || meta.last_updated_at || meta.last_seen || null,
                         status: meta.status || "OFFLINE"
-                    });
+                    };
+                    devices.push(mappedDevice);
+                    allDevicesToCache.push(mappedDevice);
                 }
             }
         }
         
-        // Store in cache for 1 hour (auto-busted on update via prefix 'nodes_')
-        await cache.set("nodes:polling:list", devices, 3600);
-        return devices;
+        yield devices;
+        
+        lastDoc = snapshot.docs[snapshot.docs.length - 1];
+        if (snapshot.docs.length < CHUNK_SIZE) break;
+    }
+    
+    // Cache the fully built list for 1 hour to prevent massive Firestore reads
+    try {
+        await cache.set("nodes:polling:list", allDevicesToCache, 3600);
     } catch (err) {
-        logger.error("Error fetching devices", err, { category: "telemetry" });
-        return [];
+        logger.warn("Failed to save active devices to cache", { error: err.message, category: "telemetry" });
     }
 }
 
@@ -205,10 +227,13 @@ async function processDevice(device) {
             telemetryEvents.emit("device:update", payload);
         }
         
-        logger.telemetry(device.id, "updated", { percentage: telemetryData.percentage, status: telemetryData.status, tds_value: telemetryData.tds_value, temperature: telemetryData.temperature });
+        const percentage = telemetryData.percentage ?? telemetryData.level_percentage ?? null;
+        logger.telemetry(device.id, "updated", { percentage, status: telemetryData.status, tds_value: telemetryData.tds_value, temperature: telemetryData.temperature });
         const detail = telemetryData.tds_value !== undefined 
-            ? `TDS: ${telemetryData.tds_value}ppm, Temp: ${telemetryData.temperature}°C`
-            : `${telemetryData.percentage.toFixed(1)}%`;
+            ? `TDS: ${telemetryData.tds_value}ppm, Temp: ${telemetryData.temperature}Â°C`
+            : percentage !== null
+                ? `${Number(percentage).toFixed(1)}%`
+                : "telemetry updated";
             
         logger.debug(`[TelemetryWorker] Updated ${device.id}: ${detail} (${telemetryData.status})`);
     } catch (err) {
@@ -216,29 +241,59 @@ async function processDevice(device) {
     }
 }
 
+const POLL_LOCK_KEY = 'telemetry:poll:lock';
+const POLL_LOCK_TTL = 55; // 55 seconds, slightly less than the 60s interval
+
 async function runPoll() {
     if (pollInProgress) {
         logger.warn("[TelemetryWorker] Previous poll still running, skipping overlap", { category: "telemetry" });
         return;
     }
+    
+    // ✅ CRITICAL FIX: Distributed Lock to prevent AWS ECS multi-instance collisions
+    if (cache.isRedisReady && cache.redis) {
+        try {
+            const acquired = await cache.redis.set(POLL_LOCK_KEY, '1', 'EX', POLL_LOCK_TTL, 'NX');
+            if (!acquired) {
+                logger.info('[TelemetryWorker] Poll lock held by another instance, skipping.', { category: "telemetry" });
+                return;
+            }
+        } catch (err) {
+            logger.warn('[TelemetryWorker] Failed acquiring distributed lock, running anyway', { error: err.message, category: "telemetry" });
+        }
+    }
+
     pollInProgress = true;
 
     try {
-    const devices = await getActiveDevices();
-    if (devices.length === 0) return;
+        logger.info("Starting distributed telemetry poll...", { category: "telemetry" });
+        let totalProcessed = 0;
 
-    logger.info(`Processing ${devices.length} devices`, { category: "telemetry", count: devices.length });
+        for await (const devicesChunk of getActiveDevicesInChunks()) {
+            if (devicesChunk.length === 0) continue;
+            
+            totalProcessed += devicesChunk.length;
 
-    // Process in batches so we don't accidentally Ddos Thingspeak
-    for (let i = 0; i < devices.length; i += BATCH_SIZE) {
-        const batch = devices.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(d => processDevice(d)));
-        // Tiny 50ms sleep between batches
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
+            // Process within the chunk in smaller batches so we don't accidentally Ddos Thingspeak
+            for (let i = 0; i < devicesChunk.length; i += BATCH_SIZE) {
+                const batch = devicesChunk.slice(i, i + BATCH_SIZE);
+                await Promise.all(batch.map(d => processDevice(d)));
+                // Tiny 50ms sleep between batches
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
 
-    logger.info("Poll complete", { category: "telemetry" });
+        logger.info(`Poll complete. Processed ${totalProcessed} devices`, { category: "telemetry" });
+    } catch (err) {
+        logger.error("Error during poll", err, { category: "telemetry" });
     } finally {
+        if (cache.isRedisReady && cache.redis) {
+            try {
+                await cache.redis.del(POLL_LOCK_KEY);
+            } catch (err) {
+                logger.warn('[TelemetryWorker] Failed to release distributed lock', { error: err.message });
+            }
+        }
         pollInProgress = false;
     }
 }

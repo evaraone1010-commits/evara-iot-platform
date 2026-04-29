@@ -5,7 +5,7 @@ const logger = require("../utils/logger.js");
  * This endpoint has backend permissions to read from Firestore
  * The frontend calls this instead of directly accessing Firestore
  */
-exports.getUserProfile = async (req, res) => {
+exports.getUserProfile = async (req, res, next) => {
   try {
     const uid = req.user?.uid;
     
@@ -97,12 +97,7 @@ exports.getUserProfile = async (req, res) => {
     });
 
   } catch (error) {
-    logger.error(`[AuthController] Error getting user profile:`, error);
-    
-    return res.status(500).json({
-      success: false,
-      error: "Failed to get user profile"
-    });
+    return next(error);
   }
 };
 

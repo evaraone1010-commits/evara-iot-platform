@@ -28,14 +28,13 @@ async function resolveDevice(id) {
     return null;
 }
 
-exports.getEvaraTDS = async (req, res) => {
+exports.getEvaraTDS = async (req, res, next) => {
     try {
         const snapshot = await db.collection("evaratds").get();
         const devices = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         res.status(200).json(devices);
     } catch (error) {
-        logger.error("Failed to get EvaraTDS devices:", error);
-        res.status(500).json({ error: "Failed to fetch EvaraTDS devices" });
+        next(error);
     }
 };
 
@@ -43,7 +42,7 @@ exports.getEvaraTDS = async (req, res) => {
  * GET /api/v1/evaratds/:id
  * Get single EvaraTDS device
  */
-exports.getEvaraTDSById = async (req, res) => {
+exports.getEvaraTDSById = async (req, res, next) => {
     try {
         const { id } = req.params;
         logger.debug("DEBUG TDS lookup id:", id);
@@ -61,8 +60,7 @@ exports.getEvaraTDSById = async (req, res) => {
         if (!doc.exists) return res.status(404).json({ error: "Metadata not found" });
         res.status(200).json({ id: doc.id, ...doc.data() });
     } catch (error) {
-        logger.error("TDS Get error:", error);
-        res.status(500).json({ error: "Failed to get TDS data" });
+        next(error);
     }
 };
 

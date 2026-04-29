@@ -298,14 +298,27 @@ class NodeService {
    * Fetch all nodes for map display via API.
    */
   async getMapNodes(communityId?: string, customerId?: string): Promise<MapDevice[]> {
-    const params: any = {};
-    if (communityId) params.community_id = communityId;
-    if (customerId) params.customer_id = customerId;
+    const allNodes: any[] = [];
+    let cursor: string | null = null;
 
-    const response = await api.get("/nodes", { params });
-    const allNodes = response.data;
+    do {
+      const params: any = { limit: '100' };
+      if (communityId) params.community_id = communityId;
+      if (customerId) params.customer_id = customerId;
+      if (cursor) params.cursor = cursor;
 
-    if (!Array.isArray(allNodes)) return [];
+      const response = await api.get("/nodes", { params });
+      const responseData = response.data;
+
+      if (Array.isArray(responseData)) {
+        allNodes.push(...responseData);
+        break;
+      } else {
+        const { data, pagination } = responseData;
+        allNodes.push(...(data || []));
+        cursor = pagination?.hasMore ? pagination.nextCursor : null;
+      }
+    } while (cursor !== null);
 
     return allNodes.map((data: any) => NodeService.mapNodeData(data));
   }

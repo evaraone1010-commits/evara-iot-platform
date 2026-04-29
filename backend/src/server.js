@@ -45,26 +45,38 @@ Sentry.init({
 const app = express();
 
 async function tryAcquireDistributedLock(key, ttlSeconds) {
-  if (!cache?.isRedisReady || !cache?.redis) return true;
+  if (!cache?.isRedisReady || !cache?.redis) {
+    logger.warn({ key }, "[Lock] Redis is unavailable — skipping job to prevent duplicate execution across cluster");
+    return false;
+  }
   try {
     const lockValue = `${process.pid}-${Date.now()}`;
     const acquired = await cache.redis.set(key, lockValue, "EX", ttlSeconds, "NX");
     return acquired === "OK";
   } catch (err) {
-    logger.warn({ key, error: err.message }, "[Lock] Failed acquiring distributed lock, proceeding to avoid stalling");
-    return true;
+    logger.error({ key, error: err.message }, "[Lock] Redis lock acquisition failed — skipping job to prevent duplicate execution");
+    return false;
   }
 }
 
 // ✅ PHASE 2: Task #14 - Lock CORS to specific domains (no *.railway.app wildcard)
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean)
   : [
       "https://app.evaratech.com",
       "http://localhost:8080",
       "http://localhost:5173",
       "http://localhost:3000"
     ];
+
+if (allowedOrigins.length === 0 && process.env.NODE_ENV === 'production') {
+  console.error(
+    '[STARTUP FAILED] ALLOWED_ORIGINS environment variable is not set. ' +
+    'Set it in your ECS Task Definition before deploying. ' +
+    'Example: ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com'
+  );
+  process.exit(1);
+}
 
 // ✅ FIX: Remove .railway.app wildcard, use only explicit origins
 const corsOptions = {
@@ -79,7 +91,7 @@ const corsOptions = {
     
     // CORS denied
     logger.warn({ origin, allowed: allowedOrigins }, '[CORS] Origin rejected');
-    callback(new Error('CORS policy: Not allowed by CORS'));
+    callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -778,11 +790,17 @@ try {
 // ============================================================================
 let isShuttingDown = false;
 
-async function gracefulShutdown() {
+async function gracefulShutdown(signal = 'SIGTERM') {
     if (isShuttingDown) return;
     isShuttingDown = true;
     
-    logger.debug("[Server] 🛑 Received shutdown signal, starting graceful shutdown...");
+    logger.debug(`[Server] 🛑 Received ${signal}, starting graceful shutdown...`);
+
+    // Force-kill if shutdown hangs
+    setTimeout(() => {
+        logger.error('[Server] Forced shutdown after timeout');
+        process.exit(1);
+    }, 10000);
     
     // 1. Stop accepting new connections
     server.close(() => {
@@ -833,11 +851,11 @@ async function gracefulShutdown() {
     process.exit(0);
 }
 
-process.on("SIGTERM", gracefulShutdown);
-process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 // Robust error guards for unexpected crashes
-process.on("unhandledRejection", (reason, promise) => {
+process.on("unhandledRejection", async (reason, promise) => {
     logger.error("[Global] Unhandled Promise Rejection", { 
         reason: reason instanceof Error ? reason.message : String(reason),
         stack: reason instanceof Error ? reason.stack : undefined,
@@ -845,11 +863,11 @@ process.on("unhandledRejection", (reason, promise) => {
     });
     Sentry.captureException(reason);
     if (process.env.NODE_ENV === "production" && !isShuttingDown) {
-        gracefulShutdown().catch(() => process.exit(1));
+        await gracefulShutdown("unhandledRejection");
     }
 });
 
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", async (err) => {
     console.error("FATAL UNCAUGHT:", err);
     logger.error("[Global] Uncaught Exception thrown", { 
         message: err.message,
@@ -857,10 +875,9 @@ process.on("uncaughtException", (err) => {
         code: err.code
     });
     Sentry.captureException(err);
-    // Give Sentry some time to send the error before exiting
-    setTimeout(() => {
-        process.exit(1);
-    }, 2000);
+    if (!isShuttingDown) {
+        await gracefulShutdown("uncaughtException");
+    }
 });
 
 module.exports = server;

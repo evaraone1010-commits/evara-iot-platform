@@ -91,7 +91,7 @@ function buildEventTimeline(history, currentState) {
   return events.slice(-5);
 }
 
-exports.getNodes = async (req, res) => {
+exports.getNodes = async (req, res, next) => {
     try {
         // ✅ CRITICAL FIX: Don't cache customer-specific queries - always get fresh data
         // This ensures consistent results when devices are added/removed
@@ -131,6 +131,9 @@ exports.getNodes = async (req, res) => {
 
         logger.debug(`[NodesController] Cache SKIPPED for consistent status (always fresh from DB) for key: ${nodesCacheKey}`);
 
+        const limit = Math.min(parseInt(req.query.limit) || 100, 200); // cap at 200
+        const cursor = req.query.cursor;
+
         let query = db.collection("devices");
 
         if (filterCustomerId) {
@@ -147,7 +150,25 @@ exports.getNodes = async (req, res) => {
             logger.debug(`[NodesController] Superadmin viewing all devices (no customer_id filter)`);
         }
 
+        const hasEqualityFilter = !!filterCustomerId || req.user.role !== "superadmin";
+
+        // ✅ FIX: Only order by created_at if there are no equality filters. 
+        // This bypasses the need for manual Composite Indexes in the Firebase Console.
+        if (!hasEqualityFilter) {
+            query = query.orderBy('created_at', 'desc');
+        }
+        
+        query = query.limit(limit);
+
+        if (cursor) {
+            const cursorDoc = await db.collection('devices').doc(cursor).get();
+            if (cursorDoc.exists) {
+                query = query.startAfter(cursorDoc);
+            }
+        }
+
         const snapshot = await query.get();
+        const nextCursor = snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1].id : null;
         logger.debug(`[NodesController] Query returned ${snapshot.size} device registry entries from DB`);
         logger.debug(`[NodesController] Device types found:`, snapshot.docs.map(d => ({ id: d.id, device_type: d.data().device_type })));
 
@@ -394,16 +415,23 @@ exports.getNodes = async (req, res) => {
         
         logger.debug(`[NodesController] ALWAYS FRESH: Device list not cached (status accuracy priority)`);
         
-        res.status(200).json(nodes);
+        res.status(200).json({
+            success: true,
+            data: nodes,
+            pagination: {
+                count: nodes.length,
+                nextCursor,
+                hasMore: !!nextCursor
+            }
+        });
     } catch (error) {
-        logger.error(`[NodesController] Error in getNodes:`, error);
-        res.status(500).json({ error: "Failed to fetch nodes" });
+        next(error);
     }
 };
 
 
 
-exports.getNodeById = async (req, res) => {
+exports.getNodeById = async (req, res, next) => {
     try {
         const doc = await resolveDevice(req.params.id);
         if (!doc || !doc.exists) return res.status(404).json({ error: "Node not found" });
@@ -451,8 +479,7 @@ exports.getNodeById = async (req, res) => {
         await cache.set(`device:${doc.id}:metadata`, result, 3600);
         res.status(200).json(result);
     } catch (error) {
-        logger.error('[getNodeById] ERROR:', error.message);
-        res.status(500).json({ error: "Failed to fetch node" });
+        next(error);
     }
 };
 
@@ -484,302 +511,52 @@ exports.getNodeTelemetry = async (req, res) => {
         const fieldMapping = metadata.sensor_field_mapping || {};
 
         // Define cacheKey before use
-        const cacheKey = `telemetry_${deviceDoc.id}`;
+        const cacheKey = `telemetry:${deviceDoc.id}`;
 
-        const depth = metadata.configuration?.depth || metadata.configuration?.total_depth || metadata.tank_size || 1.2;
-        const capacity = metadata.tank_size || 0;
+        // 1. Try Redis cache first (written by telemetryWorker via deviceStateService)
+        let responseData = await cache.get(cacheKey);
 
-        const storedLastSeen = metadata.last_updated_at || metadata.last_seen || null;
-        const storedLastValue = metadata.last_value ?? null;
-        const storedStatus = metadata.status || DEVICE_STATUS.OFFLINE;
-
-        // ── FLOW DEVICE PATH ──────────────────────────────────────────────────────────
-        if (["evaraflow", "flow", "flow_meter"].includes(type)) {
-            const flowKeys = ['flowField', 'flow_rate', 'flow_rate_field'];
-            const totalKeys = ['volumeField', 'current_reading', 'total_reading', 'meter_reading_field'];
-
-            const flowRateFieldKey =
-                flowKeys.reduce((acc, k) => acc || fieldMapping[k] || metadata[k], null) ||
-                Object.keys(fieldMapping).find(k => flowKeys.includes(fieldMapping[k])) ||
-                "field4";
-
-            const totalReadingFieldKey =
-                totalKeys.reduce((acc, k) => acc || fieldMapping[k] || metadata[k], null) ||
-                Object.keys(fieldMapping).find(k => totalKeys.includes(fieldMapping[k])) ||
-                "field5";
-
-            if (!channelId || !apiKey) {
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status: storedStatus,
-                    timestamp: storedLastSeen,
-                    flow_rate: null,
-                    total_usage: null,
-                    field_mapping: { flow_rate_field: flowRateFieldKey, total_field: totalReadingFieldKey }
-                });
-            }
-
-            const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=1`;
-            logger.debug(`[ThingSpeak] Fetching: ${url}`);
-
-            try {
-                const response = await axios.get(url, { timeout: 8000 });
-                const feeds = response.data?.feeds || [];
-                logger.debug(`[ThingSpeak] Response status 200, feeds: ${feeds.length}`);
-
-                if (!feeds || feeds.length === 0) {
-                    return res.status(200).json({
-                        deviceId: deviceDoc.id,
-                        status: DEVICE_STATUS.UNKNOWN,
-                        timestamp: storedLastSeen,
-                        flow_rate: null,
-                        total_usage: null,
-                        field_mapping: { flow_rate_field: flowRateFieldKey, total_field: totalReadingFieldKey }
-                    });
-                }
-
-                const latestFeed = feeds[feeds.length - 1];
-                const rawFlowRate = parseFloat(latestFeed[flowRateFieldKey]);
-                const rawTotal = parseFloat(latestFeed[totalReadingFieldKey]);
-                const flowRate = isNaN(rawFlowRate) ? null : rawFlowRate;
-                const totalUsage = isNaN(rawTotal) ? null : rawTotal;
-
-                logger.debug(`[ThingSpeak] totalUsage=${totalUsage} flowRate=${flowRate} (fields: total=${totalReadingFieldKey}, flow=${flowRateFieldKey})`);
-
-                const feedTimestamp = latestFeed.created_at;
-                const status = deviceState.calculateDeviceStatus(feedTimestamp);
-
-                // Persist to DB async (non-blocking)
-                db.collection(type).doc(deviceDoc.id).update({
-                    last_updated_at: feedTimestamp,
-                    status,
-                    last_telemetry_fetch: new Date().toISOString()
-                }).catch(() => null);
-
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status,
-                    timestamp: normalizeThingSpeakTimestamp(feedTimestamp),
-                    last_updated_at: normalizeThingSpeakTimestamp(feedTimestamp),
-                    flow_rate: flowRate,
-                    total_usage: totalUsage,
-                    field_mapping: { flow_rate_field: flowRateFieldKey, total_field: totalReadingFieldKey },
-                    raw_data: latestFeed
-                });
-            } catch (err) {
-                logger.error(`[ThingSpeak] Fetch error for device ${deviceDoc.id}:`, err.message);
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status: DEVICE_STATUS.UNKNOWN,
-                    timestamp: storedLastSeen,
-                    flow_rate: null,
-                    total_usage: null,
-                    error: "ThingSpeak fetch failed"
-                });
-            }
-        }
-
-        // ── TDS DEVICE PATH ──────────────────────────────────────────────────────────
-        if (["evaratds", "tds"].includes(type)) {
-            const tdsKeys = ['tdsField', 'tds_value', 'tdsValue'];
-            const tempKeys = ['tempField', 'temperature', 'temperature_field'];
+        if (!responseData) {
+            logger.debug(`[NodesController] Cache miss for ${deviceDoc.id}, falling back to Firestore metadata`);
+            // 2. Fall back to latest Firestore snapshot
+            responseData = metadata.telemetry_snapshot || metadata.last_telemetry || {};
             
-            let tdsFieldKey = Object.keys(fieldMapping).find(k => tdsKeys.includes(fieldMapping[k])) || "field2";
-      let tempFieldKey = Object.keys(fieldMapping).find(k => tempKeys.includes(fieldMapping[k])) || "field3";
-
-      if (metadata.tdsField) tdsFieldKey = metadata.tdsField;
-      if (metadata.tempField || metadata.temperature_field) tempFieldKey = metadata.tempField || metadata.temperature_field;
-
-            if (!channelId || !apiKey) {
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status: storedStatus,
-                    timestamp: storedLastSeen,
-                    tds_value: metadata.tdsValue ?? metadata.last_tds_value ?? null,
-                    temperature: metadata.temperature ?? metadata.last_temperature ?? null,
-                    water_quality: metadata.waterQualityRating ?? "Good",
-                    field_mapping: { tds_field: tdsFieldKey, temperature_field: tempFieldKey }
-                });
+            // If the snapshot is missing, populate minimal fallbacks from metadata root
+            if (!responseData.timestamp) {
+                responseData = {
+                    status: metadata.status || DEVICE_STATUS.OFFLINE,
+                    timestamp: metadata.last_updated_at || metadata.last_seen || null,
+                    flow_rate: metadata.flow_rate || 0,
+                    total_usage: metadata.total_liters || metadata.total_reading || 0,
+                    tds_value: metadata.tdsValue || metadata.last_tds_value || 0,
+                    temperature: metadata.temperature || metadata.last_temperature || 0,
+                    water_quality: metadata.waterQualityRating || "Good",
+                    distance: metadata.last_value || 0,
+                    level_percentage: metadata.level_percentage || 0,
+                    raw_data: metadata.raw_data || null
+                };
             }
-
-            const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=1`;
-            logger.debug(`[TDS] Fetching: ${url}`);
-
-            try {
-                const response = await axios.get(url, { timeout: 8000 });
-                const feeds = response.data?.feeds || [];
-                logger.debug(`[TDS] Response status 200, feeds: ${feeds.length}`);
-
-                if (!feeds || feeds.length === 0) {
-                    logger.debug(`[TDS] No feeds returned`);
-                    return res.status(200).json({
-                        deviceId: deviceDoc.id,
-                        status: DEVICE_STATUS.UNKNOWN,
-                        timestamp: storedLastSeen,
-                        tds_value: metadata.tdsValue ?? metadata.last_tds_value ?? null,
-                        temperature: metadata.temperature ?? metadata.last_temperature ?? null,
-                        water_quality: metadata.waterQualityRating ?? "Good",
-                        field_mapping: { tds_field: tdsFieldKey, temperature_field: tempFieldKey }
-                    });
-                }
-
-                const latestFeed = feeds[feeds.length - 1];
-                const rawTdsValue = parseFloat(latestFeed[tdsFieldKey]);
-                const rawTemperature = parseFloat(latestFeed[tempFieldKey]);
-                const tdsValue = isNaN(rawTdsValue) ? null : rawTdsValue;
-                const temperature = isNaN(rawTemperature) ? null : rawTemperature;
-
-                logger.debug(`[TDS] Latest feed data:`, latestFeed);
-                logger.debug(`[TDS] Extracted values: tdsValue=${tdsValue} temperature=${temperature}`);
-                logger.debug(`[TDS] Extracted from fields: tds_field=${tdsFieldKey} (value in feed=${latestFeed[tdsFieldKey]}), temp_field=${tempFieldKey} (value in feed=${latestFeed[tempFieldKey]})`);
-
-                const feedTimestamp = latestFeed.created_at;
-                const status = deviceState.calculateDeviceStatus(feedTimestamp);
-
-                // Water quality calculation (simple logic for now)
-                let quality = "Good";
-                if (tdsValue > 1000) quality = "Critical";
-                else if (tdsValue > 500) quality = "Acceptable";
-
-                // Persist to DB async (non-blocking)
-                db.collection(type).doc(deviceDoc.id).update({
-                    tdsValue,
-                    temperature,
-                    waterQualityRating: quality,
-                    last_updated_at: feedTimestamp,
-                    status,
-                    last_telemetry_fetch: new Date().toISOString(),
-                    last_tds_value: tdsValue,
-                    last_temperature: temperature
-                }).catch(() => null);
-
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status,
-                    timestamp: normalizeThingSpeakTimestamp(feedTimestamp),
-                    last_updated_at: normalizeThingSpeakTimestamp(feedTimestamp),
-                    tds_value: tdsValue,
-                    temperature: temperature,
-                    water_quality: quality,
-                    field_mapping: { tds_field: tdsFieldKey, temperature_field: tempFieldKey },
-                    raw_data: latestFeed
-                });
-            } catch (err) {
-                logger.error(`[TDS] Fetch error for device ${deviceDoc.id}:`, err.message);
-                return res.status(200).json({
-                    deviceId: deviceDoc.id,
-                    status: DEVICE_STATUS.UNKNOWN,
-                    timestamp: storedLastSeen,
-                    tds_value: metadata.tdsValue ?? metadata.last_tds_value ?? null,
-                    temperature: metadata.temperature ?? metadata.last_temperature ?? null,
-                    water_quality: metadata.waterQualityRating ?? "Good",
-                    field_mapping: { tds_field: tdsFieldKey, temperature_field: tempFieldKey },
-                    error: "ThingSpeak fetch failed"
-                });
-            }
+        } else {
+            logger.debug(`[NodesController] Serving telemetry for ${deviceDoc.id} directly from Redis cache`);
         }
 
-        // ── TANK / DEEP WELL DEVICE PATH ─────────────────────────────────────────────
-        const computeTelemetry = (distance, seenAt, status) => {
-            const metrics = computeTankMetrics(distance, {
-                depthM: depth,
-                deadBandM: deviceDoc.data().dead_band_m || deviceDoc.data().deadBand || deviceDoc.data().configuration?.dead_band_m || 0
-            });
-            const volume = (capacity * metrics.percentage) / 100;
-            const normalizedSeen = normalizeThingSpeakTimestamp(seenAt);
-
-            return {
-                deviceId: deviceDoc.id,
-                distance,
-                level_percentage: metrics.percentage,
-                volume,
-                last_seen: normalizedSeen,
-                last_updated_at: normalizedSeen,
-                last_value: distance,
-                status: status || DEVICE_STATUS.OFFLINE,
-                raw_data: null
-            };
+        // Standardize output payload for frontend compatibility
+        const result = {
+            deviceId: deviceDoc.id,
+            source: responseData.status ? 'cache' : 'firestore',
+            field_mapping: fieldMapping,
+            ...responseData,
         };
 
-        const baseTelemetry = computeTelemetry(storedLastValue ?? 0, storedLastSeen, storedStatus);
-        if (storedLastValue !== null) {
-            baseTelemetry.raw_data = metadata.raw_data || null;
-        }
-
-        if (!channelId || !apiKey) {
-            return res.status(200).json(baseTelemetry);
-        }
-
-        const freshnessMs = storedLastSeen ? (Date.now() - new Date(storedLastSeen).getTime()) : Infinity;
-        const shouldFetch = freshnessMs > 30 * 1000;
-
-        if (!shouldFetch) {
-            return res.status(200).json(baseTelemetry);
-        }
-
-        try {
-            // Resolve the field key from sensor_field_mapping for tank/deep
-            const sensorFieldKey = fieldMapping.levelField ||
-                Object.keys(fieldMapping).find(k =>
-                    fieldMapping[k] === "water_level_raw_sensor_reading" ||
-                    fieldMapping[k] === "water_level_in_cm"
-                ) || metadata.water_level_field || metadata.fieldKey || "field1";
-
-            const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=1`;
-            logger.debug(`[ThingSpeak] Fetching: ${url}`);
-            const response = await axios.get(url, { timeout: 5000 });
-            const feeds = response.data?.feeds || [];
-            logger.debug(`[ThingSpeak] Response status 200, feeds: ${feeds.length}`);
-
-            if (!feeds || feeds.length === 0) {
-                return res.status(200).json(baseTelemetry);
-            }
-
-            const lastFeed = feeds[0];
-            const distance = parseFloat(lastFeed[sensorFieldKey]) || 0;
-            const feedTimestamp = lastFeed.created_at;
-            logger.debug(`[ThingSpeak] distance=${distance} (field=${sensorFieldKey})`);
-
-            const lastStoredTimestamp = metadata.last_updated_at || metadata.last_seen || null;
-            if (lastStoredTimestamp && feedTimestamp <= lastStoredTimestamp) {
-                return res.status(200).json(baseTelemetry);
-            }
-
-            const status = deviceState.calculateDeviceStatus(feedTimestamp);
-            const result = computeTelemetry(distance, feedTimestamp, status);
-            result.raw_data = lastFeed;
-
-            // Calculate and include level_percentage for consistency
-            const updatePayload = {
-                last_value: distance,
-                last_updated_at: feedTimestamp,
-                status: result.status,
-                raw_data: lastFeed,
-                last_telemetry_fetch: new Date().toISOString(),
-                level_percentage: result.level_percentage // Include calculated percentage
-            };
-
-            await db.collection(type).doc(deviceDoc.id).update(updatePayload).catch(() => null);
-
-            // Sync status with level_percentage in telemetry_snapshot
-            syncNodeStatus(deviceDoc.id, type, feedTimestamp, {
-                level_percentage: result.level_percentage,
-                distance: distance
-            }).catch(err => logger.error("Sync error:", err));
-
-            telemetryCache.set(cacheKey, result);
-            return res.status(200).json(result);
-        } catch (err) {
-            return res.status(200).json(baseTelemetry);
-        }
+        return res.status(200).json(result);
     } catch (error) {
         logger.error("Telemetry error:", error);
-        res.status(500).json({ error: "Telemetry fetch failure" });
+        return next(error);
     }
 };
 
 
-exports.getNodeGraphData = async (req, res) => {
+exports.getNodeGraphData = async (req, res, next) => {
     try {
         const deviceDoc = await resolveDevice(req.params.id);
         if (!deviceDoc || !deviceDoc.exists) return res.status(404).json({ error: "Device not found" });
@@ -881,8 +658,7 @@ exports.getNodeGraphData = async (req, res) => {
             });
         }
     } catch (error) {
-        logger.error("Graph data error:", error);
-        res.status(500).json({ error: "Graph data fetch failure" });
+        next(error);
     }
 };
 
@@ -891,7 +667,7 @@ exports.getNodeGraphData = async (req, res) => {
  * Supports: 1W (7 days), 1M (30 days), 3M (90 days), custom date ranges
  * Automatically decides: Database (fast) vs ThingSpeak (archived)
  */
-exports.getNodeGraphDataHybrid = async (req, res) => {
+exports.getNodeGraphDataHybrid = async (req, res, next) => {
     try {
         const deviceDoc = await resolveDevice(req.params.id);
         if (!deviceDoc || !deviceDoc.exists) {
@@ -1002,17 +778,11 @@ exports.getNodeGraphDataHybrid = async (req, res) => {
         res.status(200).json(responseData);
 
     } catch (error) {
-        logger.error("[HybridGraphData] Error:", error);
-        res.status(500).json({
-            error: "Graph data fetch failure",
-            message: error.message,
-            data: [],
-            metrics: null
-        });
+        next(error);
     }
 };
 
-exports.getNodeAnalytics = async (req, res) => {
+exports.getNodeAnalytics = async (req, res, next) => {
   try {
     const deviceDoc = await resolveDevice(req.params.id);
     if (!deviceDoc || !deviceDoc.exists)
@@ -1347,8 +1117,7 @@ exports.getNodeAnalytics = async (req, res) => {
     return res.status(200).json(tankResult);
 
   } catch (error) {
-    logger.error("Tank Engine Error:", error);
-    res.status(500).json({ error: "Tank analytics calculation failure" });
+    next(error);
   }
 };
 
