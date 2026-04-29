@@ -69,7 +69,20 @@ const db = new Firestore({
 logger.debug("[Firebase] Firestore initialized with REST transport (preferRest: true)");
 
 const auth = admin.auth();
-const storage = admin.storage();
+// Initialize storage only when not running tests or when explicitly needed.
+// Some test environments don't have the Cloud Storage client available
+// (ESM vs CJS incompatibilities), which causes `admin.storage()` to throw.
+let storage = null;
+if (process.env.NODE_ENV !== 'test') {
+  try {
+    storage = admin.storage();
+  } catch (err) {
+    logger.warn('[Firebase] storage initialization skipped:', err.message);
+    storage = null;
+  }
+} else {
+  logger.debug('[Firebase] Skipping storage initialization in test environment');
+}
 
 // Non-blocking startup connectivity test
 (async () => {
