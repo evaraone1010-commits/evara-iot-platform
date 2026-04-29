@@ -37,7 +37,12 @@ function buildRedisOptions() {
 class MemoryCache {
     constructor() {
         this.store = new Map();
-        this.cleanupInterval = setInterval(() => this._cleanup(), 60_000);
+        // Avoid creating long-running intervals during tests which keep Jest from exiting.
+        if (process.env.NODE_ENV !== 'test') {
+            this.cleanupInterval = setInterval(() => this._cleanup(), 60_000);
+        } else {
+            this.cleanupInterval = null;
+        }
     }
     get(key) {
         const entry = this.store.get(key);
