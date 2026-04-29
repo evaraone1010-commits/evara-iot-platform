@@ -135,7 +135,7 @@ export default function WeekComparisonChart({ data, isLoading }: WeekComparisonC
 
   return (
     <div
-      className="apple-glass-card rounded-[20px] p-5 h-full flex flex-col relative overflow-hidden"
+      className="apple-glass-card rounded-[20px] p-5 h-full flex flex-col relative overflow-hidden min-w-0"
       style={{ minHeight: '300px' }}
     >
       <div className="flex items-center gap-3 mb-5">
@@ -151,8 +151,8 @@ export default function WeekComparisonChart({ data, isLoading }: WeekComparisonC
         )}
       </div>
 
-      <div className="flex-1" style={{ minHeight: '200px' }}>
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="flex-1 min-w-0" style={{ minHeight: '200px' }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
           <BarChart
             data={chartData}
             margin={{ top: 10, right: 8, left: -28, bottom: 0 }}

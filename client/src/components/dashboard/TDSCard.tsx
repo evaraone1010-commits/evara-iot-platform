@@ -39,11 +39,11 @@ return (
         <Link
             to={`/evaratds/${node.hardwareId || node.id}`}
             className={clsx(
-                "group rounded-[24px] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden flex flex-col relative mx-auto w-full border apple-glass-card",
+                "group rounded-[24px] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden flex flex-col relative mx-auto w-full min-w-0 border apple-glass-card",
 isOnline ? "bg-white/40 dark:bg-white/5 border-white/20" : "bg-slate-500/5 border-slate-500/10"
             )}
         >
-            <div className="p-5 flex flex-col flex-1 relative z-10 w-full gap-[18px] min-h-[160px]">
+            <div className="p-5 flex flex-col flex-1 relative z-10 w-full min-w-0 gap-[18px] min-h-[160px]">
                 {/* Header */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -82,8 +82,8 @@ EvaraTDS
                     </div>
 
                     {/* Compact Sparkline - Clean layout with blue waves */}
-                    <div className="h-10 w-full relative">
-                        <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-[40px] w-full min-w-0 relative">
+                        <ResponsiveContainer width="100%" height={40} minWidth={0} minHeight={40}>
                             <AreaChart data={history}>
 <defs>
                                     <linearGradient id="colorTds" x1="0" y1="0" x2="0" y2="1">

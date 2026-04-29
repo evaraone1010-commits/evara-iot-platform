@@ -80,6 +80,7 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   : [
       "https://app.evaratech.com",
       "http://localhost:8080",
+      "http://localhost:8081",
       "http://localhost:5173",
       "http://localhost:3000"
     ];
@@ -98,6 +99,11 @@ const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (same-origin, mobile apps, curl)
     if (!origin) return callback(null, true);
+
+    // Allow any localhost/127.0.0.1 dev origin so Vite can fall back to a free port.
+    if (process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d+$/.test(origin)) {
+      return callback(null, true);
+    }
     
     // Check against explicit list only (no wildcards)
     if (allowedOrigins.includes(origin)) {

@@ -24,7 +24,7 @@ export const ProductPieChart = ({
     ];
 
     return (
-        <div className={clsx("apple-glass-card px-[20px] py-[16px] rounded-[20px] flex flex-col h-full", className)}>
+        <div className={clsx("apple-glass-card px-[20px] py-[16px] rounded-[20px] flex flex-col h-full min-w-0", className)}>
             <div className="flex justify-between items-start mb-2 shrink-0">
                 <span className="text-[12px] font-[800] text-[var(--text-primary)] uppercase tracking-[0.1em]">Product Distribution</span>
                 <div className="w-8 h-8 rounded-full bg-blue-500/10 dark:bg-blue-400/15 flex items-center justify-center border border-blue-500/20 dark:border-blue-400/20">
@@ -34,10 +34,10 @@ export const ProductPieChart = ({
                     </svg>
                 </div>
             </div>
-            <div className="flex-1 flex flex-col items-center justify-center gap-1 min-h-0 pt-2">
+            <div className="flex-1 flex flex-col items-center justify-center gap-1 min-h-0 min-w-0 pt-2">
                 {/* Pie */}
-                <div className="flex-1 w-full" style={{ minHeight: '80px' }}>
-                    <ResponsiveContainer width="100%" height="100%">
+                <div className="flex-1 w-full min-w-0" style={{ minHeight: '80px' }}>
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={80}>
                         <PieChart>
                             <Tooltip
                                 contentStyle={{ borderRadius: '10px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: 11 }}

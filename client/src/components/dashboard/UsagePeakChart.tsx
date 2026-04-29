@@ -87,15 +87,15 @@ export default function UsagePeakChart({ nodes = [] }: { nodes: any[] }) {
     }, [nodes, todayIdx, historyData]);
 
     return (
-        <div className="apple-glass-card p-[20px] rounded-[20px] h-full flex flex-col">
+        <div className="apple-glass-card p-[20px] rounded-[20px] h-full flex flex-col min-w-0">
             <span className="text-[12px] font-[800] text-[var(--text-primary)] opacity-80 uppercase tracking-[0.1em] mb-4 shrink-0">Usage Peak (Weekly)</span>
             {nodes.length === 0 ? (
                 <div className="flex-1 min-h-0 flex items-center justify-center">
                     <p className="text-[11px] text-[var(--text-muted)] italic">No devices found</p>
                 </div>
             ) : (
-                <div className="flex-1 min-h-0">
-                    <ResponsiveContainer width="100%" height="100%">
+                <div className="flex-1 min-h-0 min-w-0" style={{ minHeight: '180px' }}>
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={180}>
                         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }} barCategoryGap="10%">
                             <defs>
                                 <linearGradient id="usageGradient" x1="0" y1="0" x2="0" y2="1">

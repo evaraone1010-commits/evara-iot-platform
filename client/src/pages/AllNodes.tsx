@@ -296,8 +296,8 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
                 <div className="text-[10px] font-black uppercase mt-1 tracking-wider leading-none card-number" style={{ color: 'var(--text-muted)' }}>m³/hr</div>
               </div>
               {/* Sparkline Overlay */}
-              <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
+              <div className="absolute inset-x-0 bottom-0 h-[40px] w-full min-w-0 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
+                <ResponsiveContainer width="100%" height={40} minWidth={0}>
                   <AreaChart data={generateMockHistory(lastTel.flow_rate || 10)}>
                     <defs>
                       <linearGradient id="colorFlow" x1="0" y1="0" x2="0" y2="1">
@@ -331,8 +331,8 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
                 <div className="text-[10px] font-black uppercase mt-1 tracking-wider leading-none card-number" style={{ color: 'var(--text-muted)' }}>liters</div>
               </div>
               {/* Sparkline Overlay */}
-              <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
+              <div className="absolute inset-x-0 bottom-0 h-[40px] w-full min-w-0 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
+                <ResponsiveContainer width="100%" height={40} minWidth={0}>
                   <AreaChart data={generateMockHistory(20, 10)}>
                     <defs>
                       <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
