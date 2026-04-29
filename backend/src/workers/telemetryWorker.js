@@ -184,7 +184,7 @@ async function processDevice(device) {
         if (!telemetryData) return;
 
         // CRITICAL FIX: Update Firestore with standardized payload
-        await deviceState.updateFirestoreTelemetry(device.type, device.id, telemetryData, feeds);
+        await deviceState.updateFirestoreTelemetry(device.type, device.id, telemetryData, feeds, device);
 
         // ✅ CRITICAL: Also update registry with latest last_seen so status is consistent everywhere
         const now = new Date().toISOString();

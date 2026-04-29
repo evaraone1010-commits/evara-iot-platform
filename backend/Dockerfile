@@ -45,6 +45,10 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 # Copy application source — add more COPY lines here if you have other dirs
 COPY --chown=node:node src ./src
 COPY --chown=node:node package.json ./
+COPY --chown=node:node docker-entrypoint.sh ./
+
+# Make entrypoint executable
+RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8000
 
@@ -60,7 +64,7 @@ HEALTHCHECK \
             process.exit(r.statusCode === 200 ? 0 : 1); \
         }).on('error', () => process.exit(1));"
 
-# Single Node.js process.
-# Horizontal scaling = deploy multiple Railway replicas.
+# Single Node.js process with port conflict prevention via entrypoint.
+# Horizontal scaling = deploy multiple Railway replicas / ECS tasks.
 # Socket.io state is shared via Redis adapter (configured in server.js).
-CMD ["node", "src/server.js"]
+CMD ["./docker-entrypoint.sh"]

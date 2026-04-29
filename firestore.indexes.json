@@ -1,0 +1,28 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "nodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath":"communityId","order":"ASCENDING"},
+        {"fieldPath":"created_at","order":"DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "customers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath":"community_id","order":"ASCENDING"},
+        {"fieldPath":"created_at","order":"DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "communities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath":"zone_id","order":"ASCENDING"},
+        {"fieldPath":"created_at","order":"DESCENDING"}
+      ]
+    }
+  ]
+}

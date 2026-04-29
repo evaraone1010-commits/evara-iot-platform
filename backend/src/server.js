@@ -59,9 +59,24 @@ async function tryAcquireDistributedLock(key, ttlSeconds) {
   }
 }
 
+function parseOriginList(value) {
+  return [...new Set(
+    String(value || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  )];
+}
+
 // ✅ PHASE 2: Task #14 - Lock CORS to specific domains (no *.railway.app wildcard)
+const productionOrigins = parseOriginList(
+  process.env.ALLOWED_ORIGINS ||
+  process.env.CORS_ORIGINS ||
+  process.env.FRONTEND_URL
+);
+
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean)
+  ? productionOrigins
   : [
       "https://app.evaratech.com",
       "http://localhost:8080",
@@ -69,11 +84,11 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       "http://localhost:3000"
     ];
 
-if (allowedOrigins.length === 0 && process.env.NODE_ENV === 'production') {
+if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
   console.error(
-    '[STARTUP FAILED] ALLOWED_ORIGINS environment variable is not set. ' +
-    'Set it in your ECS Task Definition before deploying. ' +
-    'Example: ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com'
+    '[STARTUP FAILED] No CORS origin env var was set. ' +
+    'Configure ALLOWED_ORIGINS, CORS_ORIGINS, or FRONTEND_URL in AWS before deploying. ' +
+    'Example: CORS_ORIGINS=https://yourdomain.com,https://www.yourdomain.com'
   );
   process.exit(1);
 }
@@ -711,13 +726,25 @@ app.get('/api/v1/health/ready', (req, res) => {
 // All controllers should use next(err) or throw AppError
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 8000;
+let PORT = process.env.PORT || 8000;
+let portRetries = 0;
+const MAX_PORT_RETRIES = 3;
 
 try {
     server.on("error", (err) => {
-        logger.error("[Server] Fatal error event:", err);
+        logger.error("[Server] Fatal server error event:", err);
         if (err.code === "EADDRINUSE") {
-            logger.error(`[Server] Port ${PORT} is already in use.`);
+            portRetries++;
+            if (portRetries < MAX_PORT_RETRIES) {
+                PORT = 8000 + portRetries;
+                logger.warn(`[Server] Port conflict detected. Retrying on port ${PORT} (attempt ${portRetries}/${MAX_PORT_RETRIES})...`);
+                setTimeout(() => {
+                    server.listen(PORT);
+                }, 1000);
+                return;
+            }
+            logger.error(`[Server] Port ${PORT} is already in use. Max retries exceeded (${MAX_PORT_RETRIES}).`);
+            logger.error("[Server] On AWS EC2/ECS, kill orphaned processes: pkill -f 'node.*server.js' || true");
         }
         process.exit(1);
     });

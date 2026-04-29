@@ -340,7 +340,7 @@ const processThingSpeakData = async (device, feeds) => {
 /**
  * Update Firestore with processed telemetry data
  */
-const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, feeds) => {
+const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, feeds, device = {}) => {
   try {
     const cleanObject = (obj) => {
         if (obj === null || typeof obj !== 'object') return obj;
@@ -364,6 +364,10 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
       status: telemetryData.status,
       lastTelemetryFetch: now,
       raw_data: telemetryData.raw_data,
+      device_type: deviceType,
+      customer_id: device.customer_id || device.customerId || null,
+      community_id: device.community_id || device.communityId || null,
+      isVisibleToCustomer: device.isVisibleToCustomer !== false,
     });
     if (telemetryData.flow_rate !== undefined) updatePayload.flow_rate = telemetryData.flow_rate;
     if (telemetryData.total_liters !== undefined) updatePayload.total_liters = telemetryData.total_liters;
@@ -423,6 +427,8 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
         last_updated_at: telemetryData.lastUpdatedAt,
         lastUpdatedAt: telemetryData.lastUpdatedAt,
         status: telemetryData.status,
+      customer_id: device.customer_id || device.customerId || null,
+      community_id: device.community_id || device.communityId || null,
         last_telemetry: cleanObject({
             // Tank/Deep fields
             percentage: telemetryData.percentage,
@@ -443,7 +449,7 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
         })
     });
 
-    const updateRegistry = db.collection("devices").doc(deviceId).update(registryUpdateObj);
+      const updateRegistry = db.collection("devices").doc(deviceId).update(registryUpdateObj);
 
     // Save to Redis cache for fast API retrieval (decoupled from ThingSpeak)
     await cache.set(`telemetry:${deviceId}`, updatePayload.telemetry_snapshot, 120);

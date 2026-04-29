@@ -297,7 +297,7 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
               </div>
               {/* Sparkline Overlay */}
               <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
                   <AreaChart data={generateMockHistory(lastTel.flow_rate || 10)}>
                     <defs>
                       <linearGradient id="colorFlow" x1="0" y1="0" x2="0" y2="1">
@@ -332,7 +332,7 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
               </div>
               {/* Sparkline Overlay */}
               <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
                   <AreaChart data={generateMockHistory(20, 10)}>
                     <defs>
                       <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
@@ -399,6 +399,8 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
     </Link>
   );
 };
+
+const getNodeCardKey = (node: any) => node.hardwareId || node.node_key || node.id;
 
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -659,7 +661,7 @@ const AllNodes = () => {
         ) : filtered.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 w-full max-w-7xl">
             {filtered.map((node) => (
-              <NodeCardItem key={node.node_key || node.id} node={node} realtimeStatuses={realtimeStatuses} />
+              <NodeCardItem key={getNodeCardKey(node)} node={node} realtimeStatuses={realtimeStatuses} />
             ))}
           </div>
         ) : (

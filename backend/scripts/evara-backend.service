@@ -1,0 +1,44 @@
+[Unit]
+Description=Evara Backend Node.js Service
+Documentation=https://github.com/your-org/evara
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ✅ Security: Run as non-root user
+User=evara
+Group=evara
+
+# ✅ Working directory
+WorkingDirectory=/opt/evara-backend
+
+# ✅ Environment setup
+EnvironmentFile=-/etc/evara-backend/env
+Environment="NODE_ENV=production"
+
+# ✅ Startup command (single process, fork mode)
+ExecStart=/usr/bin/node /opt/evara-backend/src/server.js
+
+# ✅ Port conflict prevention: kill any orphaned processes before starting
+ExecStartPre=/bin/bash -c 'pkill -f "node.*src/server.js" || true; sleep 2'
+
+# ✅ Restart policy for resilience
+Restart=always
+RestartSec=10
+
+# ✅ Graceful shutdown (30 second timeout for cleanup)
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ✅ Resource limits (prevents runaway processes)
+MemoryLimit=512M
+CPUQuota=80%
+
+# ✅ Logging to journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=evara-backend
+
+[Install]
+WantedBy=multi-user.target

@@ -74,6 +74,7 @@ class CacheProvider {
         this.memory = new MemoryCache();
         this.redis = null;
         this.isRedisReady = false;
+        this.isProd = process.env.NODE_ENV === "production";
 
         const redisUrl = process.env.REDIS_URL;
         if (redisUrl) {
@@ -85,17 +86,32 @@ class CacheProvider {
                     this.isRedisReady = true;
                 });
                 this.redis.on("error", (err) => {
+                    if (this.isProd) {
+                        logger.error("[Cache] Redis unavailable in production:", err.message);
+                        process.exit(1);
+                    }
                     logger.warn("[Cache] Redis Unavailable, using memory fallback:", err.message);
                     this.isRedisReady = false;
                 });
                 this.redis.on("close", () => {
+                    if (this.isProd) {
+                        logger.error("[Cache] Redis connection closed in production");
+                        process.exit(1);
+                    }
                     logger.warn("[Cache] Redis connection closed");
                     this.isRedisReady = false;
                 });
             } catch (err) {
                 logger.error("[Cache] Failed to initialise Redis:", err.message);
+                if (this.isProd) {
+                    process.exit(1);
+                }
             }
         } else {
+            if (this.isProd) {
+                logger.error("[Cache] REDIS_URL not set in production");
+                process.exit(1);
+            }
             logger.warn("[Cache] REDIS_URL not set — using in-memory cache (not suitable for production)");
         }
     }
@@ -105,7 +121,10 @@ class CacheProvider {
             try {
                 const val = await this.redis.get(key);
                 return val ? JSON.parse(val) : undefined;
-            } catch (e) { return this.memory.get(key); }
+            } catch (e) {
+                if (this.isProd) throw e;
+                return this.memory.get(key);
+            }
         }
         return this.memory.get(key);
     }
@@ -115,7 +134,9 @@ class CacheProvider {
             try {
                 await this.redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
                 return;
-            } catch (e) { /* fallback */ }
+            } catch (e) {
+                if (this.isProd) throw e;
+            }
         }
         this.memory.set(key, value, ttlSeconds);
     }
@@ -125,7 +146,9 @@ class CacheProvider {
             try {
                 await this.redis.del(key);
                 return;
-            } catch (e) { /* fallback */ }
+            } catch (e) {
+                if (this.isProd) throw e;
+            }
         }
         this.memory.del(key);
     }
@@ -143,7 +166,9 @@ class CacheProvider {
                     if (keys.length > 0) await this.redis.del(...keys);
                 } while (cursor !== '0');
                 return;
-            } catch (e) { /* fallback */ }
+            } catch (e) {
+                if (this.isProd) throw e;
+            }
         }
         this.memory.flushPrefix(prefix);
     }
@@ -153,7 +178,9 @@ class CacheProvider {
             try {
                 await this.redis.flushall();
                 return;
-            } catch (e) { /* fallback */ }
+            } catch (e) {
+                if (this.isProd) throw e;
+            }
         }
         this.memory.flushAll();
     }

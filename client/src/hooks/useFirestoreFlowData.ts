@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { useAuth } from '../context/AuthContext';
 
 export interface FirestoreFlowData {
     /** Total volume reading (e.g. 7958.17) */
@@ -36,6 +37,7 @@ export const useFirestoreFlowData = (
     deviceId: string | undefined,
     deviceType: string | undefined
 ): FirestoreFlowData => {
+    const { user, loading: authLoading } = useAuth();
     const [data, setData] = useState<FirestoreFlowData>({
         volume: null,
         flowRate: null,
@@ -47,6 +49,24 @@ export const useFirestoreFlowData = (
     });
 
     useEffect(() => {
+        if (authLoading) {
+            setData(prev => ({ ...prev, isLoading: true, error: null }));
+            return;
+        }
+
+        if (!user) {
+            setData({
+                volume: null,
+                flowRate: null,
+                timestamp: null,
+                status: null,
+                rawData: null,
+                isLoading: false,
+                error: 'Authentication required',
+            });
+            return;
+        }
+
         if (!deviceId || !deviceType) {
             setData(prev => ({ ...prev, isLoading: false }));
             return;
@@ -145,7 +165,7 @@ export const useFirestoreFlowData = (
             console.log(`[FirestoreFlow] Unsubscribing from ${collectionName}/${deviceId}`);
             unsubscribe();
         };
-    }, [deviceId, deviceType]);
+    }, [authLoading, deviceId, deviceType, user]);
 
     return data;
 };

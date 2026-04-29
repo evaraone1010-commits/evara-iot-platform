@@ -8,9 +8,21 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - MQTT_BROKER_URL=mqtt://mosquitto:1883
+      - PORT=8000
     depends_on:
       - redis
       - mosquitto
+    # ✅ PORT CONFLICT FIX: Always restart on exit, with backoff
+    restart: unless-stopped
+    # ✅ Kill any orphaned processes before starting
+    entrypoint: ["/bin/sh", "-c", "pkill -f 'node.*src/server.js' 2>/dev/null || true; sleep 2; exec node src/server.js"]
+    # ✅ Health check for Docker Compose to detect hung processes
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   redis:
     image: redis:alpine

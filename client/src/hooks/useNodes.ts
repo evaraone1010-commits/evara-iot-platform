@@ -4,6 +4,20 @@ import { deviceService } from "../services/DeviceService";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../services/api";
 
+const getNodeIdentity = (node: any) =>
+  node?.hardwareId || node?.node_key || node?.id || node?.firestore_id || node?.uid || null;
+
+const dedupeNodes = (nodes: any[]) => {
+  const seen = new Set<string>();
+  return nodes.filter((node) => {
+    const identity = getNodeIdentity(node);
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+};
+
 export const useNodes = (searchQuery: string = "") => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -42,10 +56,12 @@ export const useNodes = (searchQuery: string = "") => {
         isSuperAdmin ? undefined : user?.customer_id,
       );
 
-      if (!searchQuery) return mappedNodes;
+      const uniqueNodes = dedupeNodes(mappedNodes);
+
+      if (!searchQuery) return uniqueNodes;
 
       const searchLower = searchQuery.toLowerCase();
-      return mappedNodes.filter(
+      return uniqueNodes.filter(
         (n: any) =>
           (n.displayName || "").toLowerCase().includes(searchLower) ||
           (n.hardwareId || "").toLowerCase().includes(searchLower) ||
