@@ -4,7 +4,7 @@ const path = require("path");
 const cors = require("cors");
 const schedule = require("node-schedule");
 const adminRoutes = require("./routes/admin.routes.js");
-const { getDashboardSummary, getHierarchy, getAuditLogs, getZoneStats } = require("./controllers/admin.controller.js");
+const { getDashboardSummary, getHierarchy, getAuditLogs, getZoneStats, getPublicZones } = require("./controllers/admin.controller.js");
 const { requireAuth, checkOwnership } = require("./middleware/auth.middleware.js");
 const tenantCheck = require("./middleware/tenantCheck.middleware.js");
 const rbac = require("./middleware/rbac.middleware.js");
@@ -634,6 +634,9 @@ const globalSaaSAuth = [requireAuth, tenantCheck, rbac()];
 // Authentication routes (no auth required for verify-token, required for /me)
 const authRoutes = require("./routes/auth.routes.js");
 app.use("/api/v1/auth", authRoutes);
+
+// Public signup support data
+app.get("/api/v1/public/zones", getPublicZones);
 
 // Main admin routes — ✅ FIX #1: Add adminOnly middleware to block non-superadmins
 app.use("/api/v1/admin", globalSaaSAuth, adminOnly, adminRoutes);

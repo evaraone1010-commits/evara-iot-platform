@@ -128,6 +128,25 @@ exports.getZones = async (req, res, next) => {
     }
 };
 
+exports.getPublicZones = async (req, res, next) => {
+    try {
+        const snapshot = await db.collection("zones").orderBy("created_at", "desc").limit(100).get();
+        const zones = snapshot.docs.map(doc => ({
+            id: doc.id,
+            zoneName: doc.data().zoneName || doc.data().name || "Unnamed Zone",
+            state: doc.data().state || null,
+            country: doc.data().country || null,
+            zone_code: doc.data().zone_code || null,
+            description: doc.data().description || null,
+        }));
+
+        return res.status(200).json(zones);
+    } catch (error) {
+        logger.error("[AdminController] getPublicZones failed:", error);
+        return next(error);
+    }
+};
+
 exports.getZoneById = async (req, res, next) => {
     try {
         const doc = await db.collection("zones").doc(req.params.id).get();
@@ -297,11 +316,18 @@ exports.deleteZone = async (req, res, next) => {
 // Customers
 exports.createCustomer = async (req, res, next) => {
     try {
-        const { confirmPassword, regionFilter, ...customerData } = req.body;
-        const customer = { 
-            ...customerData, 
+        const { confirmPassword, password, regionFilter, ...customerData } = req.body;
+        const customer = {
+            display_name: customerData.display_name,
+            full_name: customerData.full_name || customerData.display_name,
+            email: customerData.email,
+            phone_number: customerData.phone_number || customerData.phone || "",
+            role: customerData.role || "customer",
+            status: customerData.status || "active",
             zone_id: regionFilter || customerData.zone_id || null,
-            created_at: new Date() 
+            community_id: customerData.community_id || null,
+            plan: customerData.plan || "pro",
+            created_at: admin.firestore.FieldValue.serverTimestamp(),
         };
         
         const docRef = db.collection("customers").doc();
@@ -315,7 +341,12 @@ exports.createCustomer = async (req, res, next) => {
             resource_type: 'customers',
             resource_id: docRef.id,
             timestamp: new Date(),
-            metadata: customerData,
+            metadata: {
+                ...customerData,
+                regionFilter: regionFilter || null,
+                password: undefined,
+                confirmPassword: undefined,
+            },
             server_time: new Date().getTime()
         });
 

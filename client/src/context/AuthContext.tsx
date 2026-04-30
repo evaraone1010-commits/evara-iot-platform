@@ -66,6 +66,13 @@ interface AuthContextType {
     email: string,
     password: string,
     displayName: string,
+    profile?: {
+      full_name?: string;
+      phone_number?: string;
+      zone_id?: string | null;
+      community_id?: string | null;
+      status?: string;
+    },
   ) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
 }
@@ -260,6 +267,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       email: string,
       password: string,
       displayName: string,
+      profile?: {
+        full_name?: string;
+        phone_number?: string;
+        zone_id?: string | null;
+        community_id?: string | null;
+        status?: string;
+      },
     ): Promise<{ success: boolean; error?: string }> => {
       try {
         const credential = await createUserWithEmailAndPassword(
@@ -278,7 +292,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           const verifyResponse = await fetch("/api/v1/auth/verify-token", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ idToken }),
+            body: JSON.stringify({
+              idToken,
+              profile: {
+                display_name: displayName,
+                full_name: profile?.full_name || displayName,
+                phone_number: profile?.phone_number || "",
+                zone_id: profile?.zone_id || null,
+                community_id: profile?.community_id || null,
+                status: profile?.status || "active",
+              },
+            }),
           });
 
           if (!verifyResponse.ok) {

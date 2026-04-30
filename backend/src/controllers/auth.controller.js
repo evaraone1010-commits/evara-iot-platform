@@ -107,7 +107,7 @@ exports.getUserProfile = async (req, res, next) => {
  */
 exports.verifyToken = async (req, res) => {
   try {
-    const { idToken } = req.body;
+    const { idToken, profile: profileInput = {} } = req.body;
 
     if (!idToken) {
       return res.status(400).json({
@@ -193,6 +193,25 @@ exports.verifyToken = async (req, res) => {
           if (profileData?.role) {
             role = (profileData.role).trim().toLowerCase().replace(/\s+/g, "");
           }
+
+          // Keep customer profile aligned with signup form fields.
+          // If the record exists but zone/phone/status were never stored, merge them now.
+          if (profileInput && Object.keys(profileInput).length > 0) {
+            const mergeProfile = {
+              ...(profileInput.display_name ? { display_name: profileInput.display_name } : {}),
+              ...(profileInput.full_name ? { full_name: profileInput.full_name } : {}),
+              ...(profileInput.phone_number ? { phone_number: profileInput.phone_number } : {}),
+              ...(profileInput.zone_id !== undefined ? { zone_id: profileInput.zone_id } : {}),
+              ...(profileInput.community_id !== undefined ? { community_id: profileInput.community_id } : {}),
+              ...(profileInput.status ? { status: profileInput.status } : {}),
+            };
+
+            if (Object.keys(mergeProfile).length > 0) {
+              await db.collection("customers").doc(decodedToken.uid).set(mergeProfile, { merge: true });
+              profileData = { ...profileData, ...mergeProfile };
+            }
+          }
+
           logger.debug(`[AuthController] ✅ User FOUND in CUSTOMERS collection`);
         } else {
           logger.debug(`[AuthController] ⚠️ User NOT found in either superadmins or customers. Auto-provisioning customer profile...`);
@@ -203,6 +222,10 @@ exports.verifyToken = async (req, res) => {
             display_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
             role: "customer",
             plan: "pro",
+            status: profileInput.status || "active",
+            phone_number: profileInput.phone_number || "",
+            zone_id: profileInput.zone_id || null,
+            community_id: profileInput.community_id || null,
             created_at: new Date().toISOString(),
           };
 

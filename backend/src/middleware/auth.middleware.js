@@ -59,6 +59,9 @@ const requireAuth = async (req, res, next) => {
                                 display_name: decodedToken.name || decodedToken.email.split("@")[0] || "User",
                                 role: "customer",
                                 plan: "pro",
+                                status: "active",
+                                phone_number: "",
+                                zone_id: null,
                                 created_at: new Date().toISOString(),
                             };
 
