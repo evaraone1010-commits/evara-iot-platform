@@ -8,13 +8,19 @@ export type { MapDevice };
  * Hook to fetch all devices for map display with real-time updates directly from Firestore
  */
 export const useMapDevices = () => {
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [devices, setDevices] = useState<MapDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const communityId = user?.role === "customer" ? user.community_id : undefined;
   const isCustomer = user?.role === "customer";
 
   useEffect(() => {
+    if (!isAuthenticated || !user) {
+      setDevices([]);
+      setIsLoading(false);
+      return;
+    }
+
     // No more blocking loading state - persistence will provide cached data instantly
     const unsubscribe = deviceService.subscribeToMapNodes((data) => {
       console.log('MAP DEBUG:', data.map(d => ({ 
@@ -32,7 +38,7 @@ export const useMapDevices = () => {
     }, communityId);
 
     return () => unsubscribe();
-  }, [communityId, isCustomer]);
+  }, [communityId, isAuthenticated, isCustomer, user]);
 
   return { data: devices, isLoading };
 };

@@ -195,7 +195,22 @@ exports.verifyToken = async (req, res) => {
           }
           logger.debug(`[AuthController] ✅ User FOUND in CUSTOMERS collection`);
         } else {
-          logger.debug(`[AuthController] ⚠️ User NOT found in either superadmins or customers`);
+          logger.debug(`[AuthController] ⚠️ User NOT found in either superadmins or customers. Auto-provisioning customer profile...`);
+
+          const bootstrapProfile = {
+            email: decodedToken.email || "",
+            full_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
+            display_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
+            role: "customer",
+            plan: "pro",
+            created_at: new Date().toISOString(),
+          };
+
+          await db.collection("customers").doc(decodedToken.uid).set(bootstrapProfile, { merge: true });
+          profileData = bootstrapProfile;
+          sourceCollection = "customers";
+          role = "customer";
+          logger.debug(`[AuthController] ✅ Auto-provisioned user in CUSTOMERS collection`);
         }
       } catch (err) {
         logger.error(`[AuthController] Error checking customers:`, err.message);

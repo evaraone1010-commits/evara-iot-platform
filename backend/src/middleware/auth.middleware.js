@@ -50,7 +50,23 @@ const requireAuth = async (req, res, next) => {
                             }
                         }
 
-                        // No matching user found — return null to signal rejection
+                        // Auto-provision basic customer profile for newly signed up users.
+                        // This handles the case where client-side Firestore writes are blocked by rules.
+                        if (decodedToken.email) {
+                            const bootstrapProfile = {
+                                email: decodedToken.email,
+                                full_name: decodedToken.name || decodedToken.email.split("@")[0] || "User",
+                                display_name: decodedToken.name || decodedToken.email.split("@")[0] || "User",
+                                role: "customer",
+                                plan: "pro",
+                                created_at: new Date().toISOString(),
+                            };
+
+                            await db.collection("customers").doc(decodedToken.uid).set(bootstrapProfile, { merge: true });
+                            return { ...bootstrapProfile, id: decodedToken.uid };
+                        }
+
+                        // No matching user found and cannot auto-provision without email
                         return null;
                     } catch (e) {
                         logger.error("Auth lookup failed", e, { category: 'auth' });

@@ -38,8 +38,7 @@ import {
   updateProfile,
 } from "firebase/auth";
 import type { User as FirebaseUser } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
+import { auth } from "../lib/firebase";
 
 export type UserRole = "superadmin" | "community_admin" | "customer";
 export type UserPlan = "free" | "pro" | "enterprise";
@@ -70,6 +69,29 @@ interface AuthContextType {
   ) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
 }
+
+const mapFirebaseAuthError = (error: any): string => {
+  const code = error?.code as string | undefined;
+
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "This email is already registered. Please sign in or use a different email.";
+    case "auth/invalid-email":
+      return "Please enter a valid email address.";
+    case "auth/weak-password":
+      return "Password is too weak. Use at least 6 characters.";
+    case "auth/operation-not-allowed":
+      return "Email/Password signup is disabled in Firebase Authentication settings.";
+    case "auth/network-request-failed":
+      return "Network error while contacting Firebase. Check your internet and try again.";
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+    case "auth/invalid-credential":
+      return "Invalid email or password.";
+    default:
+      return error?.message || "Authentication failed. Please try again.";
+  }
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -226,7 +248,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         setLoading(false);
         return {
           success: false,
-          error: err.message || "Login failed",
+          error: mapFirebaseAuthError(err),
         };
       }
     },
@@ -250,15 +272,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           // Set display name in Firebase Auth
           await updateProfile(credential.user, { displayName });
 
-          // Create profile in Firestore
-          const profile = {
-            full_name: displayName,
-            role: "customer",
-            plan: "pro",
-            created_at: new Date().toISOString(),
-          };
+          // Trigger backend verification/provisioning path so server creates/normalizes
+          // customer profile even when Firestore rules block client writes.
+          const idToken = await credential.user.getIdToken(true);
+          const verifyResponse = await fetch("/api/v1/auth/verify-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken }),
+          });
 
-          await setDoc(doc(db, "customers", credential.user.uid), profile);
+          if (!verifyResponse.ok) {
+            const verifyData = await verifyResponse.json().catch(() => ({}));
+            return {
+              success: false,
+              error: verifyData?.error || "Signup succeeded but profile setup failed",
+            };
+          }
 
           await fetchProfile(credential.user);
           return { success: true };
@@ -268,7 +297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       } catch (err: any) {
         return {
           success: false,
-          error: err.message || "Signup failed",
+          error: mapFirebaseAuthError(err),
         };
       }
     },

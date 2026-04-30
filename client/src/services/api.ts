@@ -95,9 +95,15 @@ api.interceptors.response.use(
     
     // Log 401 errors specifically for debugging
     if (status === 401) {
-      console.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
+      const hasCurrentUser = !!auth.currentUser;
       const authHeader = (error.config?.headers as any)?.Authorization;
-      console.error('[API Error] Authorization header present:', !!authHeader);
+
+      if (!hasCurrentUser) {
+        console.warn('[API Error] 401 received while logged out. This can happen during route transitions after sign-out.');
+      } else {
+        console.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
+        console.error('[API Error] Authorization header present:', !!authHeader);
+      }
     }
     
     return Promise.reject(error);
