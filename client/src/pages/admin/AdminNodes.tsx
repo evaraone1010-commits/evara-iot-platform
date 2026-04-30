@@ -89,7 +89,7 @@ const AdminNodes = () => {
   const enrichedNodes = useMemo(() => {
     return nodes.map((node) => {
       let zoneName = "Loading...";
-      let communityName = "Loading...";
+      const communityName = "Loading...";
       let customerName = "Loading...";
 
       // Find hierarchy data

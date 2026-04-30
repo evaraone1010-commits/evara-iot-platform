@@ -52,7 +52,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
         if (period === '1H') {
               const now = new Date();
               const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-              let sorted = [...history].map((d) => ({
+              const sorted = [...history].map((d) => ({
                   ...d,
                   timestampMs: new Date(d.date!).getTime(),
                   current: d.value || 0
@@ -87,7 +87,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
               }
               return interpolated;
           } else if (period === '24H') {
-            let sorted = [...history].map((d) => ({
+            const sorted = [...history].map((d) => ({
                 ...d,
                 timestampMs: new Date(d.date!).getTime(),
                 current: d.value || 0
@@ -106,7 +106,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
                      dataIdx++;
                  }
                  
-                 let point = { 
+                 const point = { 
                      timestampMs: t, 
                      label: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), 
                      fullTime: new Date(t).toLocaleString(),
@@ -481,7 +481,7 @@ const TotalFlowRateCard = ({ history, flowRate, maxFlowRate, className = "" }: {
         }
 
         return filtered.reduce((sum, item) => sum + item.value, 0);
-    }, [history, period]);
+    }, [history, period, startDate, endDate]);
 
     return (
         <div className={`apple-glass-card rounded-[2rem] p-4 flex flex-col relative overflow-hidden h-full ${className}`}>

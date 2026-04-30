@@ -241,6 +241,9 @@ const EvaraTankAnalytics = () => {
         data: unifiedData,
         isLoading: analyticsLoading,
         isFetching: analyticsFetching,
+        isStale,
+        deviceOffline,
+        lastDataTimestamp,
         refetch,
     } = useDeviceAnalytics(hardwareId, {
         filter: {
@@ -255,11 +258,10 @@ const EvaraTankAnalytics = () => {
     // ── Auto-fetch data when device is selected ────────────────────────────────
     useEffect(() => {
         if (hardwareId) {
-            // Immediately fetch fresh data from ThingSpeak when device is selected
-            refetch();
+            refetch(); // immediate fetch when navigating to a device
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hardwareId]); // IMPORTANT: Only depend on hardwareId, NOT refetch
+    }, [hardwareId]); // intentionally omit refetch — stable callback, no loop risk
 
 
     const deviceConfig = ('config' in (unifiedData?.config ?? {})
@@ -469,164 +471,163 @@ const EvaraTankAnalytics = () => {
 
         if (tankChartRange === '24H') {
             const now = Date.now();
-            const latestBoundary = Math.floor(now / (15 * 60000)) * (15 * 60000);
-            const startBoundary = latestBoundary - (4 * 60 * 60000); // 4 hours
-            
-            let sorted = [...chartData].map((d: any) => ({
-                ...d,
-                timestampMs: new Date(d.timestamp || d.created_at).getTime(),
-                level: d.level || 0,
-                volume: d.volume || 0
-            })).sort((a: any, b: any) => a.timestampMs - b.timestampMs);
+            // Show last 4 hours at per-minute resolution (240 points max)
+            // X-axis will only render 8 tick labels (every 30 min = 8 ticks)
+            const windowMs = 4 * 60 * 60_000;
+            const endMs = now;
+            const startMs = endMs - windowMs;
+
+            // 1. Sort all available data ascending
+            const sorted = [...chartData]
+                .map((d: any) => ({
+                    ...d,
+                    _ms: new Date(d.timestamp || d.created_at || 0).getTime(),
+                }))
+                .filter((d: any) => !isNaN(d._ms))
+                .sort((a: any, b: any) => a._ms - b._ms);
 
             if (sorted.length === 0) return [];
 
-            const interpolated = [];
-            
-            for (let t = startBoundary; t <= latestBoundary; t += 60000) { 
-                 let dataIdx = 0;
-                 while (dataIdx < sorted.length - 1 && sorted[dataIdx + 1].timestampMs <= t) {
-                     dataIdx++;
-                 }
-                 
-                 let point: any = { timestampMs: t, time: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), fullTime: new Date(t).toLocaleString() };
-                 
-                 if (dataIdx >= sorted.length - 1) {
-                     point.level = sorted[sorted.length-1].level;
-                     point.volume = sorted[sorted.length-1].volume;
-                 } else if (sorted[dataIdx].timestampMs > t) {
-                     point.level = sorted[0].level;
-                     point.volume = sorted[0].volume;
-                 } else {
-                     const p1 = sorted[dataIdx];
-                     const p2 = sorted[dataIdx + 1];
-                     const ratio = (t - p1.timestampMs) / Math.max(1, p2.timestampMs - p1.timestampMs);
-                     point.level = p1.level + (p2.level - p1.level) * ratio;
-                     point.volume = p1.volume + (p2.volume - p1.volume) * ratio;
-                 }
-                 interpolated.push(point);
-            }
-            
-            // XAxis edge padding point (null values so it doesn't draw but creates whitespace)
-            interpolated.push({
-                timestampMs: latestBoundary + (5 * 60000), 
-                time: new Date(latestBoundary + (5 * 60000)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                fullTime: new Date(latestBoundary + (5 * 60000)).toLocaleString(),
-                level: null,
-                volume: null
-            });
-            
-            return interpolated;
-        } else if (tankChartRange === '1W') {
-            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-            const today = new Date();
-            const result = [];
+            // 2. Build one data point per minute for the 4-hour window
+            //    This gives exactly 240 points — chart renders all of them,
+            //    but XAxis only shows 8 ticks (every 30 min = 30 slots apart)
+            const MINUTE_MS = 60_000;
+            const result: any[] = [];
 
-            for (let i = 6; i >= 0; i--) {
-                const targetDate = new Date(today);
-                targetDate.setDate(targetDate.getDate() - i);
-
-                const dayData = chartData.filter(d => {
-                    const ts = new Date((d as any).timestamp);
-                    return ts.getDate() === targetDate.getDate() && ts.getMonth() === targetDate.getMonth();
-                });
-
-                let avgLevel: number | null = null;
-                let avgVolume: number | null = null;
-                if (dayData.length > 0) {
-                    avgLevel = dayData.reduce((sum, item) => sum + (item.level || 0), 0) / dayData.length;
-                    avgVolume = dayData.reduce((sum, item) => sum + (item.volume || 0), 0) / dayData.length;
+            for (let t = startMs; t <= endMs; t += MINUTE_MS) {
+                // Binary-search closest data point at or before t
+                let lo = 0, hi = sorted.length - 1, idx = 0;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (sorted[mid]._ms <= t) { idx = mid; lo = mid + 1; }
+                    else hi = mid - 1;
                 }
 
+                const p1 = sorted[idx];
+                const p2 = sorted[idx + 1];
+
+                let level: number | null = null;
+                let volume: number | null = null;
+
+                if (!p2 || p1._ms > t) {
+                    // No data yet for this minute — leave null (chart renders a gap)
+                    level = null;
+                    volume = null;
+                } else if (!p2 || p2._ms === p1._ms) {
+                    level = p1.level ?? 0;
+                    volume = p1.volume ?? 0;
+                } else {
+                    // Linear interpolation between the two nearest real points
+                    const ratio = (t - p1._ms) / (p2._ms - p1._ms);
+                    level  = (p1.level  ?? 0) + ((p2.level  ?? 0) - (p1.level  ?? 0))  * ratio;
+                    volume = (p1.volume ?? 0) + ((p2.volume ?? 0) - (p1.volume ?? 0)) * ratio;
+                }
+
+                // ✅ STALE FIX: if device is offline AND this minute is after the last
+                //    real data timestamp, insert null instead of repeating the last value.
+                //    This creates a visible flat-line cutoff rather than false continuity.
+                const isAfterLastData = deviceOffline && lastDataTimestamp
+                    && t > new Date(lastDataTimestamp).getTime() + 5 * 60_000;
+
                 result.push({
-                    time: days[targetDate.getDay()],
-                    timestamp: targetDate.toISOString(),
-                    level: avgLevel ?? 0,
-                    volume: avgVolume ?? 0
+                    _ms: t,
+                    // time string — only used for the 8 XAxis ticks
+                    time: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    timestamp: new Date(t).toISOString(),
+                    level:  isAfterLastData ? null : level,
+                    volume: isAfterLastData ? null : volume,
                 });
             }
+
             return result;
-        } else if (tankChartRange === '1M') {
-            const result = [];
+        }
+
+        if (tankChartRange === '1W') {
+            const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
             const today = new Date();
+            return Array.from({ length: 7 }, (_, i) => {
+                const target = new Date(today);
+                target.setDate(target.getDate() - (6 - i));
+                const dayData = chartData.filter((d: any) => {
+                    const ts = new Date(d.timestamp || d.created_at);
+                    return ts.getDate() === target.getDate() && ts.getMonth() === target.getMonth();
+                });
+                const avg = (key: string) => dayData.length > 0
+                    ? dayData.reduce((s: number, d: any) => s + (d[key] || 0), 0) / dayData.length
+                    : 0;
+                return {
+                    time: days[target.getDay()],
+                    timestamp: target.toISOString(),
+                    level: avg('level'),
+                    volume: avg('volume'),
+                };
+            });
+        }
 
-            for (let i = 3; i >= 0; i--) {
-                const targetDate = new Date(today);
-                targetDate.setDate(targetDate.getDate() - (i * 7));
-
-                const weekData = chartData.filter(d => {
-                    const ts = new Date((d as any).timestamp);
-                    const diffTime = targetDate.getTime() - ts.getTime();
-                    const diffDays = diffTime / (1000 * 60 * 60 * 24);
+        if (tankChartRange === '1M') {
+            const today = new Date();
+            return Array.from({ length: 4 }, (_, i) => {
+                const target = new Date(today);
+                target.setDate(target.getDate() - ((3 - i) * 7));
+                const weekData = chartData.filter((d: any) => {
+                    const ts = new Date(d.timestamp || d.created_at);
+                    const diffDays = (target.getTime() - ts.getTime()) / (86_400_000);
                     return diffDays >= 0 && diffDays < 7;
                 });
+                const avg = (key: string) => weekData.length > 0
+                    ? weekData.reduce((s: number, d: any) => s + (d[key] || 0), 0) / weekData.length
+                    : 0;
+                return {
+                    time: 'Week ' + (i + 1),
+                    timestamp: target.toISOString(),
+                    level: avg('level'),
+                    volume: avg('volume'),
+                };
+            });
+        }
 
-                let avgLevel: number | null = null;
-                let avgVolume: number | null = null;
-                if (weekData.length > 0) {
-                    avgLevel = weekData.reduce((sum, item) => sum + (item.level || 0), 0) / weekData.length;
-                    avgVolume = weekData.reduce((sum, item) => sum + (item.volume || 0), 0) / weekData.length;
-                }
-
-                result.push({
-                    time: `Week ${4 - i}`,
-                    timestamp: targetDate.toISOString(),
-                    level: avgLevel ?? 0,
-                    volume: avgVolume ?? 0
-                });
-            }
-            return result;
-        } else if (tankChartRange === 'RANGE') {
-            if (!rangeStart || !rangeEnd) {
-                return chartData.slice(-7);
-            }
+        if (tankChartRange === 'RANGE') {
+            if (!rangeStart || !rangeEnd) return chartData.slice(-7);
             const start = new Date(rangeStart);
-            const end = new Date(rangeEnd);
+            const end   = new Date(rangeEnd);
             end.setHours(23, 59, 59, 999);
-
-            const rangeFeeds = chartData.filter(d => {
-                const ts = new Date((d as any).timestamp);
+            const rangeFeeds = chartData.filter((d: any) => {
+                const ts = new Date(d.timestamp || d.created_at);
                 return ts >= start && ts <= end;
             });
-
-            // PREPROCESSING: If range is more than 24 hours and we have many points, group by hour for a cleaner trend
-            const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+            const diffHours = (end.getTime() - start.getTime()) / 3_600_000;
             if (diffHours > 24 && rangeFeeds.length > 500) {
-                const hourlyMap = new Map<string, { level: number; volume: number; count: number }>();
-                rangeFeeds.forEach(d => {
-                    const ts = new Date((d as any).timestamp);
-                    const key = `${ts.getFullYear()}-${ts.getMonth() + 1}-${ts.getDate()} ${ts.getHours()}:00`;
-                    const existing = hourlyMap.get(key) || { level: 0, volume: 0, count: 0 };
-                    hourlyMap.set(key, {
-                        level: existing.level + (d.level || 0),
-                        volume: existing.volume + (d.volume || 0),
-                        count: existing.count + 1
-                    });
+                const map = new Map<string, { level: number; volume: number; count: number }>();
+                rangeFeeds.forEach((d: any) => {
+                    const ts = new Date(d.timestamp || d.created_at);
+                    const key = ts.toISOString().slice(0, 13) + ':00'; // group by hour
+                    const prev = map.get(key) || { level: 0, volume: 0, count: 0 };
+                    map.set(key, { level: prev.level + (d.level || 0), volume: prev.volume + (d.volume || 0), count: prev.count + 1 });
                 });
-
-                return Array.from(hourlyMap.entries()).map(([key, data]) => {
-                    const ts = new Date(key);
-                    return {
-                        time: ts.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit' }),
-                        timestamp: ts.toISOString(),
-                        level: data.level / data.count,
-                        volume: data.volume / data.count
-                    };
-                });
+                return Array.from(map.entries()).map(([key, val]) => ({
+                    time: new Date(key).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit' }),
+                    timestamp: key,
+                    level:  val.level  / val.count,
+                    volume: val.volume / val.count,
+                }));
             }
-
             return rangeFeeds;
         }
+
         return chartData;
-    }, [chartData, tankChartRange, rangeStart, rangeEnd]);
+    }, [chartData, tankChartRange, rangeStart, rangeEnd, deviceOffline, lastDataTimestamp]);
 
     const chartTimeTicks = useMemo(() => {
         if (tankChartRange !== '24H') return undefined;
-        const ticks = [];
+        const ticks: string[] = [];
         const now = Date.now();
-        const latestBoundary = Math.floor(now / (15 * 60000)) * (15 * 60000);
-        const startBoundary = latestBoundary - (4 * 60 * 60000);
-        for (let t = startBoundary; t <= latestBoundary; t += 30 * 60000) {
+        const windowMs = 4 * 60 * 60_000;
+        const startMs  = now - windowMs;
+        // One tick every 30 minutes = 8 ticks + start = 9 labels max
+        const TICK_INTERVAL = 30 * 60_000;
+        // Snap start to nearest 30-min boundary for clean labels
+        const snapped = Math.ceil(startMs / TICK_INTERVAL) * TICK_INTERVAL;
+        for (let t = snapped; t <= now; t += TICK_INTERVAL) {
             ticks.push(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
         }
         return ticks;
@@ -684,6 +685,22 @@ const EvaraTankAnalytics = () => {
         const m = Math.floor((seconds % 3600) / 60);
         if (h > 0) return `${h}h ${m}m`;
         return `${m}m`;
+    };
+
+    // Human friendly "time ago" string for offline notices
+    const formatTimeAgo = (iso?: string | null) => {
+        if (!iso) return 'unknown';
+        const ts = new Date(iso).getTime();
+        if (isNaN(ts)) return 'unknown';
+        const diff = Date.now() - ts;
+        const sec = Math.floor(diff / 1000);
+        if (sec < 60) return `${sec} sec${sec === 1 ? '' : 's'} ago`;
+        const min = Math.floor(sec / 60);
+        if (min < 60) return `${min} min${min === 1 ? '' : 's'} ago`;
+        const hrs = Math.floor(min / 60);
+        if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+        const days = Math.floor(hrs / 24);
+        return `${days} day${days === 1 ? '' : 's'} ago`;
     };
 
     // Use the LAST chart data point for tank card display — ensures exact parity with graph
@@ -1779,198 +1796,293 @@ const EvaraTankAnalytics = () => {
 
 
 
-                            {/* COMBINED HISTORY CHART */}
+{/* ── OFFLINE / STALE DATA BANNER ─────────────────────────────────────────── */}
+{deviceOffline && lastDataTimestamp && (
+    <div
+        className="flex items-center gap-3 px-4 py-3 rounded-2xl mb-2"
+        style={{
+            background: 'rgba(255,59,48,0.08)',
+            border: '1px solid rgba(255,59,48,0.25)',
+        }}
+    >
+        <span
+            className="w-2 h-2 rounded-full flex-shrink-0"
+            style={{ background: '#FF3B30' }}
+        />
+        <div className="flex flex-col gap-0.5">
+            <p className="text-[12px] font-bold m-0" style={{ color: '#FF3B30' }}>
+                Device offline — no new data received
+            </p>
+            <p className="text-[11px] font-normal m-0" style={{ color: 'var(--text-muted)' }}>
+                Last seen <span className="font-bold">{formatTimeAgo(lastDataTimestamp)}</span>. Chart shows data up to that point.
+            </p>
+        </div>
+    </div>
+)}
 
-                        <div className="apple-glass-card flex flex-col items-stretch justify-between relative overflow-hidden flex-grow" style={{
-                            background: "var(--card-bg)",
-                            backdropFilter: "var(--card-blur)",
-                            WebkitBackdropFilter: "var(--card-blur)",
-                            borderRadius: '2.5rem',
-                            border: '1px solid var(--card-border)',
-                            boxShadow: '0 20px 60px rgba(0,0,0,0.12)',
-                            padding: '24px',
-                            minHeight: '350px'
-                        }}>
-                                <div className="flex items-start justify-between flex-wrap gap-4 mb-8">
-                                    <h2 className="text-[20px] font-bold text-[var(--text-primary)] tracking-tight m-0 leading-tight">TANK LEVEL AND VOLUME</h2>
-                                    
-                                    <div className="flex flex-col items-end gap-2.5">
-                                        <div className="flex items-center gap-3">
-                                            {/* Time Range Pills */}
-                                            <div className="flex p-1 rounded-full border relative overflow-hidden shrink-0 shadow-inner" style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }}>
-                                                {['24H', '1W', '1M', 'RANGE'].map((r) => {
-                                                    const active = tankChartRange === r;
-                                                    return (
-                                                        <button
-                                                            key={r}
-                                                            onClick={() => setTankChartRange(r as any)}
-                                                            className={`relative z-10 px-4 py-1.5 text-[10px] font-extrabold tracking-widest uppercase rounded-full cursor-pointer transition-all duration-300 ${
-                                                                active ? 'text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-                                                            }`}
-                                                            style={{
-                                                                border: 'none',
-                                                                background: active ? '#004F94' : 'transparent',
-                                                                boxShadow: active ? '0 4px 12px rgba(0, 79, 148, 0.25)' : 'none'
-                                                            }}
-                                                        >
-                                                            {r}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
+{/* ── COMBINED HISTORY CHART ───────────────────────────────────────────────── */}
+<div
+    className="apple-glass-card flex flex-col items-stretch justify-between relative overflow-hidden flex-grow"
+    style={{
+        background: "var(--card-bg)",
+        backdropFilter: "var(--card-blur)",
+        WebkitBackdropFilter: "var(--card-blur)",
+        borderRadius: '2.5rem',
+        border: '1px solid var(--card-border)',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.12)',
+        padding: '24px',
+        minHeight: '350px',
+    }}
+>
+    {/* Header row */}
+    <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
+        <div className="flex flex-col gap-1">
+            <h2 className="text-[20px] font-bold text-[var(--text-primary)] tracking-tight m-0 leading-tight">
+                TANK LEVEL AND VOLUME
+            </h2>
+            {/* Live pulse indicator */}
+            {!deviceOffline && (
+                <div className="flex items-center gap-1.5">
+                    <span
+                        className="w-1.5 h-1.5 rounded-full animate-pulse"
+                        style={{ background: '#34C759' }}
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#34C759' }}>
+                        Live · updates every 60s
+                    </span>
+                </div>
+            )}
+            {deviceOffline && (
+                <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#FF3B30' }} />
+                    <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#FF3B30' }}>
+                        Offline · showing last known data
+                    </span>
+                </div>
+            )}
+        </div>
 
-                                            {tankChartRange === 'RANGE' && (
-                                                <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-2 duration-300">
-                                                    <input 
-                                                        type="date" 
-                                                        value={rangeStart}
-                                                        onChange={(e) => setRangeStart(e.target.value)}
-                                                        className="border rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[var(--text-primary)] focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }}
-                                                    />
-                                                    <span className="text-[10px] text-[var(--text-muted)] font-bold">TO</span>
-                                                    <input 
-                                                        type="date" 
-                                                        value={rangeEnd}
-                                                        onChange={(e) => setRangeEnd(e.target.value)}
-                                                        className="border rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[var(--text-primary)] focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }}
-                                                    />
-                                                </div>
-                                            )}
-                                        </div>
+        <div className="flex flex-col items-end gap-2.5">
+            {/* Time range pills */}
+            <div className="flex p-1 rounded-full border relative overflow-hidden shrink-0 shadow-inner"
+                style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }}>
+                {(['24H','1W','1M','RANGE'] as const).map((r) => {
+                    const active = tankChartRange === r;
+                    return (
+                        <button
+                            key={r}
+                            onClick={() => setTankChartRange(r)}
+                            className={`relative z-10 px-4 py-1.5 text-[10px] font-extrabold tracking-widest uppercase rounded-full cursor-pointer transition-all duration-300 ${
+                                active ? 'text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                            }`}
+                            style={{
+                                border: 'none',
+                                background: active ? '#004F94' : 'transparent',
+                                boxShadow: active ? '0 4px 12px rgba(0,79,148,0.25)' : 'none',
+                            }}
+                        >
+                            {r}
+                        </button>
+                    );
+                })}
+            </div>
 
-                                        {/* Chart Legend - Positioned below filters */}
-                                        <div className="flex items-center gap-5 mr-1">
-                                            <button
-                                                onClick={() => setShowTankLevel(!showTankLevel)}
-                                                className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity bg-transparent border-none p-0"
-                                                style={{ opacity: showTankLevel ? 1 : 0.3 }}
-                                            >
-                                                <div className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm" style={{ background: '#0A84FF' }} />
-                                                <span className="text-[10px] font-black uppercase tracking-wider text-[var(--text-primary)]">TANK LEVEL (%)</span>
-                                            </button>
+            {tankChartRange === 'RANGE' && (
+                <div className="flex items-center gap-2">
+                    <input type="date" value={rangeStart}
+                        onChange={(e) => setRangeStart(e.target.value)}
+                        className="border rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[var(--text-primary)] focus:ring-1 focus:ring-blue-500 outline-none"
+                        style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }} />
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold">TO</span>
+                    <input type="date" value={rangeEnd}
+                        onChange={(e) => setRangeEnd(e.target.value)}
+                        className="border rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[var(--text-primary)] focus:ring-1 focus:ring-blue-500 outline-none"
+                        style={{ background: 'var(--bg-primary)', borderColor: 'var(--card-border)' }} />
+                </div>
+            )}
 
-                                            <button
-                                                onClick={() => setShowVolume(!showVolume)}
-                                                className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity bg-transparent border-none p-0"
-                                                style={{ opacity: showVolume ? 1 : 0.3 }}
-                                            >
-                                                <div className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm" style={{ background: '#FF9500' }} />
-                                                <span className="text-[10px] font-black uppercase tracking-wider text-[var(--text-primary)]">VOLUME</span>
-                                            </button>
-                                        </div>
-                                    </div>
+            {/* Legend */}
+            <div className="flex items-center gap-5 mr-1">
+                <button
+                    onClick={() => setShowTankLevel(!showTankLevel)}
+                    className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity bg-transparent border-none p-0"
+                    style={{ opacity: showTankLevel ? 1 : 0.3 }}
+                >
+                    <div className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm" style={{ background: '#0A84FF' }} />
+                    <span className="text-[10px] font-black uppercase tracking-wider text-[var(--text-primary)]">Tank Level (%)</span>
+                </button>
+                <button
+                    onClick={() => setShowVolume(!showVolume)}
+                    className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity bg-transparent border-none p-0"
+                    style={{ opacity: showVolume ? 1 : 0.3 }}
+                >
+                    <div className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm" style={{ background: '#FF9500' }} />
+                    <span className="text-[10px] font-black uppercase tracking-wider text-[var(--text-primary)]">Volume</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {/* Chart body */}
+    {historyLoading ? (
+        <div className="flex-grow flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
+            Loading history…
+        </div>
+    ) : chartDataForDisplay.length === 0 ? (
+        <div className="flex-grow flex items-center justify-center italic" style={{ color: 'var(--text-muted)' }}>
+            No history data available for this period.
+        </div>
+    ) : (
+        <div className="flex-grow flex flex-col relative justify-end" style={{ minHeight: 280 }}>
+            <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                    data={chartDataForDisplay}
+                    margin={{ top: 10, right: 36, left: 0, bottom: 0 }}
+                >
+                    <defs>
+                        <linearGradient id="colorLevel" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor="#0A84FF" stopOpacity={0.18} />
+                            <stop offset="95%" stopColor="#0A84FF" stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor="#FF9500" stopOpacity={0.18} />
+                            <stop offset="95%" stopColor="#FF9500" stopOpacity={0} />
+                        </linearGradient>
+                    </defs>
+
+                    <CartesianGrid
+                        strokeDasharray="3 3"
+                        vertical={false}
+                        stroke="var(--chart-grid-color)"
+                        strokeOpacity={0.5}
+                    />
+
+                    {/*
+                      ✅ KEY CHANGE: ticks = only the 8 pre-computed time labels
+                         interval="preserveStartEnd" — never skip a tick label
+                         All 240 points are still IN the data array and visible
+                         on hover, but the axis only labels 8 of them.
+                    */}
+                    <XAxis
+                        dataKey="time"
+                        ticks={chartTimeTicks}
+                        interval={tankChartRange === '24H' ? 0 : 'preserveStartEnd'}
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: 'var(--text-muted)', fontWeight: 500 }}
+                        minTickGap={30}
+                    />
+
+                    {/* Level % — left axis */}
+                    <YAxis
+                        yAxisId="left"
+                        domain={[0, 100]}
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#0A84FF' }}
+                        label={{
+                            value: 'Level (%)',
+                            angle: -90,
+                            position: 'insideLeft',
+                            style: { textAnchor: 'middle', fontSize: 10, fill: '#0A84FF', fontWeight: 600 },
+                        }}
+                    />
+
+                    {/* Volume — right axis */}
+                    <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#FF9500' }}
+                        tickFormatter={(v) => volDivisor === 1000 ? `${(v / 1000).toFixed(1)}K` : String(v)}
+                        label={{
+                            value: `Volume (${volDivisor === 1000 ? 'KL' : 'L'})`,
+                            angle: 90,
+                            position: 'insideRight',
+                            style: { textAnchor: 'middle', fontSize: 10, fill: '#FF9500', fontWeight: 600 },
+                        }}
+                    />
+
+                    <Tooltip
+                        cursor={{ stroke: '#0A84FF', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.45 }}
+                        isAnimationActive={false}
+                        content={(props: any) => {
+                            const { active, payload } = props;
+                            if (!active || !payload?.length) return null;
+                            const raw = payload[0]?.payload;
+                            const ts = raw?.timestamp;
+                            let dateStr = '--', timeStr = raw?.time || '--';
+                            if (ts) {
+                                try {
+                                    const d = new Date(ts);
+                                    if (!isNaN(d.getTime())) {
+                                        dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                                        timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                                    }
+                                } catch (_) {}
+                            }
+                            return (
+                                <div style={{
+                                    borderRadius: 12,
+                                    border: '1px solid var(--card-border)',
+                                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                                    background: 'var(--bg-secondary)',
+                                    padding: '10px 14px',
+                                    minWidth: 170,
+                                }}>
+                                    <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 12, color: 'var(--text-primary)' }}>
+                                        {dateStr} &nbsp; {timeStr}
+                                    </p>
+                                    {payload.map((entry: any, i: number) => (
+                                        entry.value != null && (
+                                            <p key={i} style={{ margin: '3px 0 0', fontSize: 12, color: entry.color, fontWeight: 600 }}>
+                                                {entry.name === 'Tank Level (%)'
+                                                    ? `Level: ${entry.value.toFixed(1)}%`
+                                                    : `Volume: ${entry.value.toFixed(0)} L`}
+                                            </p>
+                                        )
+                                    ))}
                                 </div>
+                            );
+                        }}
+                    />
 
-
-
-                                {historyLoading ? (
-
-                                    <div className="flex-grow flex items-center justify-center text-slate-400">Loading history…</div>
-
-                                ) : chartDataForDisplay.length === 0 ? (
-                                    <div className="flex-grow flex items-center justify-center text-slate-400 italic">No history data available for this period.</div>
-                                ) : (
-                                    <div className="flex-grow flex flex-col relative justify-end">
-
-                                        <ResponsiveContainer width="100%" height="100%">
-
-                                            <AreaChart data={chartDataForDisplay} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-
-                                                <defs>
-
-                                                    <linearGradient id="colorLevel" x1="0" y1="0" x2="0" y2="1">
-
-                                                        <stop offset="5%" stopColor="#0A84FF" stopOpacity={0.15} />
-
-                                                        <stop offset="95%" stopColor="#0A84FF" stopOpacity={0} />
-
-                                                    </linearGradient>
-
-                                                    <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
-
-                                                        <stop offset="5%" stopColor="#FF9500" stopOpacity={0.15} />
-
-                                                        <stop offset="95%" stopColor="#FF9500" stopOpacity={0} />
-
-                                                    </linearGradient>
-
-                                                </defs>
-
-                                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid-color)" />
-
-                                                <XAxis 
-                                                    dataKey={tankChartRange === '24H' ? 'time' : 'time'}
-                                                    ticks={chartTimeTicks}
-                                                    interval={tankChartRange === '24H' ? 0 : 'preserveStartEnd'}
-                                                    axisLine={false}
-                                                    tickLine={false}
-                                                    tick={{ fontSize: 10, fill: 'var(--text-muted)', fontWeight: 500 }}
-                                                />
-
-
-
-                                                {/* LEFT Y-AXIS - LEVEL % */}
-
-                                                <YAxis yAxisId="left" domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#0A84FF' }}
-
-                                                    label={{ value: 'Level (%)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fontSize: 10, fill: '#0A84FF', fontWeight: 600 } }} />
-
-
-
-                                                {/* RIGHT Y-AXIS - VOLUME KL */}
-
-                                                <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#FF9500' }}
-
-                                                    tickFormatter={(v) => volDivisor === 1000 ? `${(v / 1000).toFixed(1)}K` : v}
-
-                                                    label={{ value: `Volume (${volDivisor === 1000 ? 'KL' : 'L'})`, angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fontSize: 10, fill: '#FF9500', fontWeight: 600 } }} />
-
-
-
-                                                <Tooltip
-                                                    cursor={{ stroke: '#0A84FF', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.5 }}
-                                                    isAnimationActive={false}
-                                                    content={(props: any) => {
-                                                        const { active, payload } = props;
-                                                        if (!active || !payload || payload.length === 0) return null;
-                                                        const raw = payload[0]?.payload;
-                                                        const fullTs = raw?.timestamp;
-                                                        let dateStr = '--';
-                                                        let timeStr = raw?.time || '--';
-                                                        if (fullTs) {
-                                                            try {
-                                                                const d = new Date(fullTs);
-                                                                if (!isNaN(d.getTime())) {
-                                                                    dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-                                                                    timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-                                                                }
-                                                            } catch (_) { }
-                                                        }
-                                                        return (
-                                                            <div style={{ borderRadius: '12px', border: '1px solid var(--card-border)', boxShadow: '0 8px 24px rgba(0,0,0,0.1)', background: 'var(--bg-secondary)', padding: '10px 14px', minWidth: 160 }}>
-                                                                <p style={{ margin: '0 0 2px 0', fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>{dateStr} &nbsp; {timeStr}</p>
-                                                                {payload.map((entry: any, i: number) => (
-                                                                    <p key={i} style={{ margin: '4px 0 0', fontSize: 13, color: entry.color, fontWeight: 600 }}>
-                                                                        {entry.name === 'Tank Level (%)' ? `Tank Level (%) : ${entry.value?.toFixed(2)}%` : `Volume : ${entry.value?.toFixed(2)} L`}
-                                                                    </p>
-                                                                ))}
-                                                            </div>
-                                                        );
-                                                    }}
-                                                />
-                                                {showTankLevel && <Area yAxisId="left" type="monotone" name="Tank Level (%)" dataKey="level" stroke="#0A84FF" fillOpacity={1} fill="url(#colorLevel)" strokeWidth={2.5} dot={false} />}
-                                                {showVolume && <Area yAxisId="right" type="monotone" name="Volume" dataKey="volume" stroke="#FF9500" fillOpacity={1} fill="url(#colorVolume)" strokeWidth={2.5} dot={false} />}
-                                            </AreaChart>
-
-                                        </ResponsiveContainer>
-
-                                    </div>
-
-                                )}
-
-                            </div>
+                    {showTankLevel && (
+                        <Area
+                            yAxisId="left"
+                            type="monotone"
+                            name="Tank Level (%)"
+                            dataKey="level"
+                            stroke="#0A84FF"
+                            strokeWidth={2}
+                            fillOpacity={1}
+                            fill="url(#colorLevel)"
+                            dot={false}
+                            activeDot={{ r: 4, strokeWidth: 0, fill: '#0A84FF' }}
+                            connectNulls={false}
+                        />
+                    )}
+                    {showVolume && (
+                        <Area
+                            yAxisId="right"
+                            type="monotone"
+                            name="Volume"
+                            dataKey="volume"
+                            stroke="#FF9500"
+                            strokeWidth={2}
+                            fillOpacity={1}
+                            fill="url(#colorVolume)"
+                            dot={false}
+                            activeDot={{ r: 4, strokeWidth: 0, fill: '#FF9500' }}
+                            connectNulls={false}
+                        />
+                    )}
+                </AreaChart>
+            </ResponsiveContainer>
+        </div>
+    )}
+</div>
 
                         </div>
 

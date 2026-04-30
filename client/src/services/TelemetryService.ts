@@ -21,8 +21,8 @@ export interface TelemetryData {
   signal_strength?: number | null;
 
   // Calculation fields
-  waterLevel?: number;
-  distance?: number;
+  waterLevel?: number | null;
+  distance?: number | null;
 }
 
 export interface DeviceMetadata {
