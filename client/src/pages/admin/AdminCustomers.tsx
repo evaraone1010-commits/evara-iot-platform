@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { adminService } from "../../services/admin";
+import { deviceService } from "../../services/DeviceService";
 import { User, Search, MapPin, Filter, Plus } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
 import { AddCustomerForm } from "../../components/admin/forms/AddCustomerForm";
@@ -22,7 +24,23 @@ const AdminCustomers = () => {
         adminService.getCustomers(),
         adminService.getRegions(),
       ]);
-      setClients(Array.isArray(custData) ? custData : []);
+      const clientsArr = Array.isArray(custData) ? custData : [];
+      // Fetch nodes once and aggregate by customer id
+      const nodes = await deviceService.getMapNodes();
+      const byCustomer: Record<string, any[]> = {};
+      nodes.forEach((n: any) => {
+        const cid = n.customer_id || n.customerId || n.customer || n.customer_id;
+        if (!cid) return;
+        if (!byCustomer[cid]) byCustomer[cid] = [];
+        byCustomer[cid].push(n);
+      });
+
+      const clientsWithDevices = clientsArr.map((c: any) => ({
+        ...c,
+        devices: byCustomer[c.id] || [],
+        deviceCount: (byCustomer[c.id] || []).length,
+      }));
+      setClients(clientsWithDevices);
       setZones(Array.isArray(zoneData) ? zoneData : []);
     } catch (error) {
       console.error("Failed to fetch clients or hierarchy:", error);

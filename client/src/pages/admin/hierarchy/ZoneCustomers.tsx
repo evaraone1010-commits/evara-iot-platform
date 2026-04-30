@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../../context/AuthContext";
 import { adminService } from "../../../services/admin";
+import { deviceService } from "../../../services/DeviceService";
 import {
   ChevronRight,
   User,
@@ -36,30 +38,10 @@ const RegionCustomers = () => {
   const { user } = useAuth();
   const [customers, setCustomers] = useState<CustomerWithDevices[]>([]);
   const [regionData, setRegionData] = useState<RegionRow | null>(null);
-  const [_loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
   const { showToast } = useToast();
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [custData, regData] = await Promise.all([
-          adminService.getCustomers(),
-          adminService.getRegions(),
-        ]);
-        setCustomers(custData as CustomerWithDevices[]);
-        setRegionData(
-          (regData as RegionRow[]).find((r) => r.id === regionId) || null,
-        );
-      } catch (error) {
-        console.error("Failed to fetch zone customers data:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, [regionId]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -68,17 +50,47 @@ const RegionCustomers = () => {
         adminService.getCustomers(),
         adminService.getRegions(),
       ]);
-      setCustomers(custData as CustomerWithDevices[]);
-      const foundRegion = (regData as RegionRow[]).find(
-        (r) => r.id === regionId,
-      );
-      setRegionData(foundRegion || null);
+      const customersArr = custData as CustomerWithDevices[];
+      const region = (regData as RegionRow[]).find((r) => r.id === regionId) || null;
+
+      // Fetch nodes once and attach devices to customers in this region
+      const allNodes = await deviceService.getMapNodes();
+      const nodesByCustomer: Record<string, any[]> = {};
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      allNodes.forEach((n: any) => {
+        const cid = (n as any).customer_id || (n as any).customerId || (n as any).customer;
+        if (!cid) return;
+        if (!nodesByCustomer[cid]) nodesByCustomer[cid] = [];
+        nodesByCustomer[cid].push(n);
+      });
+
+      const enriched = customersArr.map((c) => ({
+        ...c,
+        devices: nodesByCustomer[c.id] || [],
+      }));
+
+      setCustomers(enriched);
+      setRegionData(region);
     } catch (error) {
       console.error("Failed to fetch zone customers data:", error);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+  }, [regionId]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#3A7AFE]"></div>
+      </div>
+    );
+  }
+
+  
 
   const handleDeleteCustomer = async (
     e: React.MouseEvent,
