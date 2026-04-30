@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../context/AuthContext";
 import { adminService } from "../../../services/admin";
 import { Modal } from "../../../components/ui/Modal";
@@ -30,6 +31,7 @@ interface RegionStat {
 
 const RegionsOverview = () => {
   const { user, role, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [zones, setRegions] = useState<RegionRow[]>([]);
   const [stats, setStats] = useState<RegionStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -278,11 +280,16 @@ const RegionsOverview = () => {
                           </button>
                         </div>
                       )}
-                      <span>Manage</span>
-                      <ArrowRight
-                        size={14}
-                        className="transform group-hover:translate-x-1 transition-transform"
-                      />
+                      <button
+                        onClick={() => navigate(`/superadmin/zones/${zone.id}/customers`)}
+                        className="text-[13px] font-[700] text-[#3A7AFE] hover:underline flex items-center gap-2"
+                      >
+                        <span>Manage</span>
+                        <ArrowRight
+                          size={14}
+                          className="transform group-hover:translate-x-1 transition-transform"
+                        />
+                      </button>
                     </div>
                   </div>
                 </div>
