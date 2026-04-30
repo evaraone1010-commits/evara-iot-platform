@@ -3,19 +3,49 @@ import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
 import { MapPin } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
-import { computeDeviceStatus } from '../../services/DeviceService';
+import { computeTdsDeviceStatus, normalizeStatus } from '../../utils/tdsStatus';
+
+type TdsTelemetry = {
+    timestamp?: string | null;
+    lastUpdatedAt?: string | null;
+    last_updated_at?: string | null;
+    last_seen?: string | null;
+    status?: string | null;
+    connection_status?: string | null;
+    tds_value?: number | null;
+    tdsValue?: number | null;
+    water_quality?: string | null;
+    waterQualityRating?: string | null;
+    water_quality_rating?: string | null;
+    tdsHistory?: Array<number | { value?: number | null; tds_value?: number | null }>;
+    tds_history?: Array<number | { value?: number | null; tds_value?: number | null }>;
+};
+
+type TdsNode = {
+    id?: string;
+    hardwareId?: string;
+    last_seen?: string | null;
+    status?: string | null;
+    connection_status?: string | null;
+    last_telemetry?: TdsTelemetry;
+    label?: string;
+    displayName?: string;
+    location_name?: string;
+    location?: string;
+};
 
 interface TDSCardProps {
-    node: any;
-    realtimeStatus?: any;
+    node: TdsNode;
+    realtimeStatus?: TdsTelemetry;
 }
 
 const TDSCard = ({ node, realtimeStatus }: TDSCardProps) => {
     const data = realtimeStatus || node.last_telemetry || {};
-const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
+    const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
     const waterQuality = data.water_quality ?? data.waterQualityRating ?? data.water_quality_rating ?? "Unknown";
+    const explicitStatus = normalizeStatus(data.status || data.connection_status || node.status || node.connection_status);
     const lastSeen = data.timestamp || data.lastUpdatedAt || data.last_updated_at || data.last_seen || node.last_seen || null;
-    const isOnline = computeDeviceStatus(lastSeen) === "Online";
+    const isOnline = explicitStatus ? explicitStatus === 'Online' : computeTdsDeviceStatus(lastSeen) === "Online";
 
     // History for sparkline
     let historyData = (data.tdsHistory || data.tds_history || []);
@@ -25,11 +55,10 @@ const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
         historyData = Array(10).fill(tdsValue);
     }
 
-    const history = historyData.map((h: any, i: number) => {
+    const history = historyData.map((h, i) => {
         const baseValue = typeof h === 'object' ? (h.value ?? h.tds_value ?? 0) : h;
-        // Add a tiny bit of "up and down" noise if the user wants it to look alive
-        // This is purely for aesthetics as requested
-        const noise = (Math.sin(i * 1.5) * 0.5) + (Math.random() * 0.2);
+        // Deterministic tiny wave so the sparkline stays stable between renders.
+        const noise = Math.sin(i * 1.5) * 0.5 + (i % 3) * 0.06;
         return {
             index: i,
             value: baseValue + noise
