@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../../../context/AuthContext";
 import { adminService } from "../../../services/admin";
 import { Modal } from "../../../components/ui/Modal";
@@ -35,9 +35,12 @@ const RegionsOverview = () => {
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingZone, setEditingZone] = useState<RegionRow | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingZone, setDeletingZone] = useState<RegionRow | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const { showToast } = useToast();
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [regionsData, statsData] = await Promise.all([
         adminService.getRegions(),
@@ -49,19 +52,19 @@ const RegionsOverview = () => {
 
       setRegions(regionsData as RegionRow[]);
       setStats(statsData as RegionStat[]);
-    } catch (error) {
+    } catch {
       // Use toast for user-facing error notification
       showToast("Failed to load regions data", "error");
     } finally {
       setLoading(false);
     }
-  };
+  }, [showToast]);
 
   useEffect(() => {
     if (!authLoading) {
       fetchData();
     }
-  }, [authLoading]);
+  }, [authLoading, fetchData]);
 
   const getStatsForRegion = (regionId: string) => {
     const s = stats.find((st) => st.zone_id === regionId);
@@ -81,21 +84,32 @@ const RegionsOverview = () => {
     fetchData();
   };
 
-  const handleDeleteZone = async (e: React.MouseEvent, zoneId: string) => {
+  const promptDeleteZone = (e: React.MouseEvent, zone: RegionRow) => {
     e.stopPropagation();
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this zone? All communities within it will lose their geographic assignment.",
-      )
-    )
-      return;
+    setDeletingZone(zone);
+    setShowDeleteConfirm(true);
+  };
 
+  const confirmDeleteZone = async () => {
+    if (!deletingZone) return;
+    setIsDeleting(true);
     try {
-      await adminService.deleteRegion(zoneId);
+      await adminService.deleteRegion(deletingZone.id);
       showToast("Zone deleted successfully", "success");
+      setShowDeleteConfirm(false);
+      setDeletingZone(null);
       fetchData();
-    } catch (err: any) {
-      showToast(err.message || "Failed to delete zone", "error");
+    } catch (err: unknown) {
+      let msg = "Failed to delete zone";
+      if (err && typeof err === "object" && "message" in err) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        msg = (err as any).message || msg;
+      } else if (typeof err === "string") {
+        msg = err;
+      }
+      showToast(msg, "error");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -256,7 +270,7 @@ const RegionsOverview = () => {
                             <Edit2 size={14} />
                           </button>
                           <button
-                            onClick={(e) => handleDeleteZone(e, zone.id)}
+                            onClick={(e) => promptDeleteZone(e, zone)}
                             className="p-1.5 hover:bg-red-50/50 rounded-lg zone-icon transition-colors"
                             title="Delete Zone"
                           >
@@ -304,6 +318,51 @@ const RegionsOverview = () => {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal for Zones */}
+      {showDeleteConfirm && deletingZone && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 pt-20"
+          style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }}
+          onClick={() => !isDeleting && setShowDeleteConfirm(false)}
+        >
+          <div
+            className="rounded-3xl p-8 flex flex-col w-full max-w-sm text-center"
+            style={{
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--card-border)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="material-icons" style={{ fontSize: '32px' }}>delete_outline</span>
+            </div>
+
+            <h3 className="text-xl font-bold mb-2 text-[var(--text-primary)]">Delete this Zone?</h3>
+            <p className="text-sm text-[var(--text-muted)] mb-8">
+              This will permanently remove <strong>{deletingZone.zoneName}</strong> and all its geographic assignments. All communities within this zone will lose their geographic assignment. This action cannot be undone.
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={confirmDeleteZone}
+                disabled={isDeleting}
+                className={`w-full py-3 rounded-2xl text-sm font-bold uppercase tracking-wider transition-all ${isDeleting ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-200 active:scale-95'}`}
+              >
+                {isDeleting ? 'Deleting...' : 'Yes, Delete Zone'}
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={isDeleting}
+                className="w-full py-3 rounded-2xl text-sm font-bold uppercase tracking-wider text-[var(--text-muted)] hover:bg-gray-800 transition-all active:scale-95"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create/Edit Zone Modal */}
       <Modal
