@@ -5,19 +5,18 @@ import axios, {
 } from "axios";
 import { io } from 'socket.io-client';
 import { auth } from "../lib/firebase";
+import { getApiBaseUrl, getSocketUrl } from "../utils/runtimeUrls";
 
-// In development: use relative path for Vite proxy to work
-// In production: use absolute URL from env
-const VITE_API_URL = import.meta.env.VITE_API_URL || 
-  (import.meta.env.DEV ? "/api/v1" : "http://localhost:8000/api/v1");
-const SOCKET_URL = import.meta.env.VITE_WS_URL || 
-  (import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api/v1', '') : 'http://localhost:8000');
+// Use same-domain defaults unless an explicit env override is provided.
+const VITE_API_URL = getApiBaseUrl();
+const SOCKET_URL = getSocketUrl();
 
 console.log('[API Config] VITE_API_URL:', VITE_API_URL);
 console.log('[API Config] SOCKET_URL:', SOCKET_URL);
 console.log('[API Config] DEV mode:', import.meta.env.DEV);
 
 export const socket = io(SOCKET_URL, {
+  autoConnect: false, // Prevents 400 Bad Request on page load before auth is ready
   auth: async (cb) => {
     const user = auth.currentUser;
     if (user) {

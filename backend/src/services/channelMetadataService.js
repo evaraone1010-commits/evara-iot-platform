@@ -17,7 +17,7 @@ const logger = require("../utils/logger.js");
  * @returns {Promise<Object>} { field1: "Meter Reading_7", field2: "Flow Rate", ... }
  */
 async function fetchChannelMetadataFromThingSpeak(channelId, apiKey = null) {
-  const AppError = require("../utils/AppError.js");
+  const { AppError } = require("../utils/AppError.js");
 
   try {
     // ✅ FIX: Use the feeds endpoint with results=0 — this works for BOTH

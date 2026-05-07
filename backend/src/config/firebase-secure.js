@@ -1,92 +1,49 @@
 const admin = require("firebase-admin");
-const { Firestore } = require("@google-cloud/firestore");
-const path = require("path");
-const fs = require("fs");
-const { logger } = require("./pino.js"); // ✅ AUDIT FIX M10: Import logger for structured logging
+const logger = require("../utils/logger.js");
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Secure Firebase initialization
-// ═══════════════════════════════════════════════════════════════════════════
-let serviceAccountConfig = null;
+function buildFirebaseConfigFromEnv() {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY;
 
-const serviceAccountPath = path.join(__dirname, "../../serviceAccount.json");
+    if (!projectId || !clientEmail || !privateKey) {
+        return null;
+    }
 
-if (fs.existsSync(serviceAccountPath)) {
-  serviceAccountConfig = require(serviceAccountPath);
-} else if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL) {
-  serviceAccountConfig = {
-    "type": process.env.FIREBASE_TYPE || "service_account",
-    "project_id": process.env.FIREBASE_PROJECT_ID,
-    "private_key_id": process.env.FIREBASE_PRIVATE_KEY_ID,
-    "private_key": process.env.FIREBASE_PRIVATE_KEY 
-      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').trim().replace(/^"/, '').replace(/"$/, '')
-      : undefined,
-    "client_email": process.env.FIREBASE_CLIENT_EMAIL,
-    "auth_uri": process.env.FIREBASE_AUTH_URI || "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": process.env.FIREBASE_TOKEN_URI || "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": process.env.FIREBASE_AUTH_PROVIDER_CERT_URL || "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": process.env.FIREBASE_CLIENT_CERT_URL
-  };
-} else {
-  throw new Error("No Firebase credentials found. Provide serviceAccount.json or set FIREBASE_PRIVATE_KEY env var.");
+    return {
+        credential: admin.credential.cert({
+            projectId,
+            clientEmail,
+            privateKey: privateKey.replace(/\\n/g, "\n"),
+        }),
+        projectId,
+        databaseURL: process.env.FIREBASE_DATABASE_URL || undefined,
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
+    };
 }
 
 if (!admin.apps.length) {
-  if (process.env.NODE_ENV === "test" || process.env.FIRESTORE_EMULATOR_HOST) {
-    admin.initializeApp({
-      projectId: "demo-test-project",
-      databaseURL: "http://127.0.0.1:9000?ns=demo-test-project"
-    });
-  } else {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccountConfig),
-      projectId: serviceAccountConfig.project_id,
-      databaseURL: process.env.FIREBASE_DATABASE_URL,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-    });
-  }
+    const config = buildFirebaseConfigFromEnv();
+    if (config) {
+        admin.initializeApp(config);
+    } else {
+        admin.initializeApp();
+    }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CRITICAL FIX: Create Firestore with REST transport at construction time.
-//
-// ROOT CAUSE: Firestore defaults to gRPC transport which hangs on certain
-// networks (corporate firewalls, proxies, VPNs). Firebase Auth uses REST
-// and works fine — this aligns Firestore to also use REST.
-//
-// Using the @google-cloud/firestore constructor directly with preferRest
-// ensures the REST transport is set BEFORE any connection is attempted.
-// ═══════════════════════════════════════════════════════════════════════════
-const db = new Firestore({
-  projectId: serviceAccountConfig.project_id,
-  credentials: {
-    client_email: serviceAccountConfig.client_email,
-    private_key: serviceAccountConfig.private_key,
-  },
-  preferRest: true,  // Use REST API instead of gRPC — fixes hanging connections
-});
+const db = admin.firestore();
 
-logger.debug("[Firebase] Firestore initialized with REST transport (preferRest: true)");
-
-const auth = admin.auth();
-// Initialize storage only when not running tests or when explicitly needed.
-// Some test environments don't have the Cloud Storage client available
-// (ESM vs CJS incompatibilities), which causes `admin.storage()` to throw.
-let storage = null;
-if (process.env.NODE_ENV !== 'test') {
-  try {
-    storage = admin.storage();
-  } catch (err) {
-    logger.warn('[Firebase] storage initialization skipped:', err.message);
-    storage = null;
-  }
-} else {
-  logger.debug('[Firebase] Skipping storage initialization in test environment');
-}
+module.exports = { db, admin };
 
 // Non-blocking startup connectivity test
 (async () => {
   try {
+        const hasServiceAccount = process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY;
+        if (!hasServiceAccount && process.env.NODE_ENV !== 'production') {
+            logger.warn("[Firebase] Service-account env vars are missing; skipping Firestore connectivity probe in development.");
+            return;
+        }
+
     const testStart = Date.now();
     const snapshot = await db.collection("zones").limit(1).get();
     const elapsed = Date.now() - testStart;
@@ -95,7 +52,5 @@ if (process.env.NODE_ENV !== 'test') {
     logger.error("[Firebase] ❌ Firestore connectivity FAILED:", err.message);
   }
 })();
-
-module.exports = { db, auth, storage, admin };
 
 

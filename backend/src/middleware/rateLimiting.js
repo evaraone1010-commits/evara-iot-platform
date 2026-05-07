@@ -1,11 +1,32 @@
 const rateLimit = require('express-rate-limit');
-const RedisStore = require('rate-limit-redis');
+const { ipKeyGenerator } = require('express-rate-limit');
 const redis = require('../services/redisClient');
 const logger = require('../utils/logger');
+
+let RedisStore = null;
+try {
+  const redisStoreModule = require('rate-limit-redis');
+  RedisStore = redisStoreModule?.RedisStore || redisStoreModule;
+} catch (error) {
+  logger.warn('rate-limit-redis not available; using in-memory rate limiting store', {
+    message: error?.message
+  });
+}
 
 class RateLimitingService {
   constructor() {
     this.limits = new Map();
+  }
+
+  getStore() {
+    if (!RedisStore || !redis) {
+      return undefined;
+    }
+
+    return new RedisStore({
+      client: redis,
+      prefix: 'rl:'
+    });
   }
 
   // Create rate limiter for specific endpoint
@@ -28,15 +49,12 @@ class RateLimitingService {
       },
       standardHeaders: true, // Return rate limit info in headers
       legacyHeaders: false,
-      store: new RedisStore({
-        client: redis,
-        prefix: 'rl:'
-      }),
+      store: this.getStore(),
       keyGenerator: keyGenerator || ((req) => {
         // Use tenant + user + IP as key
         const tenantId = req.tenantId || 'default';
         const userId = req.user?.uid || 'anonymous';
-        const ip = req.ip || req.connection.remoteAddress;
+        const ip = ipKeyGenerator(req, req.res);
         return `${tenantId}:${userId}:${ip}`;
       }),
       skip: (req) => {
@@ -52,7 +70,8 @@ class RateLimitingService {
 
         return false;
       },
-      onLimitReached: (req, res, options) => {
+      handler: (req, res) => {
+        const retryAfter = Math.ceil(options.windowMs / 1000);
         logger.warn('Rate limit exceeded', {
           ip: req.ip,
           userId: req.user?.uid,
@@ -61,9 +80,6 @@ class RateLimitingService {
           limit: options.max,
           windowMs: options.windowMs
         });
-      },
-      handler: (req, res) => {
-        const retryAfter = Math.ceil(options.windowMs / 1000);
         res.set('Retry-After', retryAfter);
         res.status(429).json({
           error: message,
@@ -189,6 +205,14 @@ class RateLimitingService {
   // Get current rate limit status for a tenant
   async getTenantRateLimitStatus(tenantId) {
     try {
+      if (!redis) {
+        return {
+          requests: 0,
+          remaining: 100,
+          resetTime: new Date(Date.now() + 15 * 60 * 1000)
+        };
+      }
+
       const key = `tenant:${tenantId}:status`;
       const status = await redis.get(key);
       
@@ -210,6 +234,11 @@ class RateLimitingService {
   // Reset rate limits for a tenant (admin function)
   async resetTenantRateLimit(tenantId) {
     try {
+      if (!redis) {
+        logger.info('Redis unavailable; skipping tenant rate limit reset', { tenantId });
+        return true;
+      }
+
       const pattern = `rl:tenant:${tenantId}:*`;
       const keys = await redis.keys(pattern);
       

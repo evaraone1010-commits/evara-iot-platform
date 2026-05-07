@@ -59,10 +59,28 @@ async function syncNodeStatus(id, type, lastSeen, additionalData = {}) {
                 ...additionalData,
                 timestamp: lastSeen,
                 status
-            }
+            },
+            ...additionalData
         };
 
+        // 1. Update typed collection (metadata)
         await db.collection(typeLower).doc(id).update(updatePayload);
+
+        // 2. Update central registry (devices) for dashboard/list views
+        const registryPayload = {
+            status,
+            last_updated_at: lastSeen,
+            last_seen: lastSeen,
+            telemetry_snapshot: updatePayload.telemetry_snapshot
+        };
+
+        // Map common fields to registry for list view accuracy
+        if (additionalData.level_percentage !== undefined) registryPayload.level_percentage = additionalData.level_percentage;
+        if (additionalData.flow_rate !== undefined) registryPayload.flow_rate = additionalData.flow_rate;
+        if (additionalData.tds_value !== undefined) registryPayload.tds_value = additionalData.tds_value;
+
+        await db.collection("devices").doc(id).update(registryPayload);
+        logger.debug(`[syncNodeStatus] ✅ Synchronized ${id} (${type}) -> ${status}`);
     } catch (err) {
         logger.error(`Status sync failed for ${id}:`, err);
     }
@@ -839,8 +857,10 @@ exports.getNodeAnalytics = async (req, res, next) => {
     } else if (startDate && endDate) {
       thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&start=${startDate}&end=${endDate}&results=8000`;
     } else {
-      // default 24H - fetching 480 points to cover the last 8 hours (at 1-min intervals)
-      thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=480`;
+      // default 24H - fetching by time (last 24 hours) instead of arbitrary result limit
+      // results=8000 is the maximum allowed by ThingSpeak per request, ensuring high-frequency nodes are not cut off.
+      // We also add minutes=1440 to strictly fetch the last 24 hours.
+      thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&minutes=1440&results=8000`;
     }
 
     const response = await axios.get(thingspeakUrl);
@@ -1106,12 +1126,12 @@ exports.getNodeAnalytics = async (req, res, next) => {
       tankBehavior,
     };
 
-    // Update Firebase
-    await db.collection(type).doc(deviceDoc.id).update({
+    // ✅ FIX: Use syncNodeStatus to ensure registry (All Nodes page) and metadata are both updated
+    await syncNodeStatus(deviceDoc.id, type, latestPoint.timestamp, {
       level_percentage: latestPoint.level,
       currentVolume: latestPoint.volume,
       waterState: analytics.state,
-    }).catch(err => logger.error("Metadata update error:", err));
+    }).catch(err => logger.error("Sync error:", err));
 
     await cache.set(analyticsCacheKey, tankResult, 300);
     return res.status(200).json(tankResult);

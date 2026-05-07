@@ -175,7 +175,10 @@ exports.listQuerySchema = z.object({
     cursor: z.string().max(256).optional(),
     zone_id: z.string().optional(),
     community_id: z.string().optional(),
-    customer_id: z.string().optional()
+    customer_id: z.string().optional(),
+    sortBy: z.string().optional(),
+    sortOrder: z.string().optional(),
+    search: z.string().optional()
   }).strict() // ✅ ISSUE #6: Reject unknown fields
 });
 

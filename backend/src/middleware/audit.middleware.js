@@ -29,8 +29,10 @@ const auditLog = (actionName) => {
                 logEntry.target_device = req.params.id;
             }
 
-            // Sync to Firestore 'audit_logs' collection
-            await db.collection("audit_logs").add(logEntry);
+            // Sync to Firestore 'audit_logs' collection (sanitize before write)
+            const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
+            const safeLogEntry = sanitizeForFirestore(logEntry) || {};
+            await db.collection("audit_logs").add(safeLogEntry);
         } catch (err) {
             logger.error("[AuditLog] Failed to record action:", err.message);
         }

@@ -12,7 +12,7 @@
 #
 # FIX:
 #   • Multi-stage build: builder installs deps; final image copies only production deps
-#   • Single `node src/server.js` process — horizontal scaling is handled by
+#   • Single `node src/bootstrap.js` process — horizontal scaling is handled by
 #     deploying multiple Railway replicas + the Socket.io Redis adapter (server.js)
 #   • Non-root `node` user
 #   • HEALTHCHECK so Railway restarts unhealthy instances automatically
@@ -33,22 +33,21 @@ RUN npm ci --omit=dev
 # ── Stage 2: lean runtime image ──────────────────────────────────────────────
 FROM node:20-alpine
 
-# Run as the built-in non-root `node` user
-# If an attacker exploits a code path they get user-level access, not root
-USER node
-
-WORKDIR /app
-
-# Copy production node_modules from builder (chown to node user)
-COPY --from=builder --chown=node:node /app/node_modules ./node_modules
-
-# Copy application source — add more COPY lines here if you have other dirs
+# Copy application source
 COPY --chown=node:node src ./src
 COPY --chown=node:node package.json ./
 COPY --chown=node:node docker-entrypoint.sh ./
 
-# Make entrypoint executable
+# Make entrypoint executable (MUST be done before switching to non-root USER)
 RUN chmod +x docker-entrypoint.sh
+
+# Run as the built-in non-root `node` user
+USER node
+
+WORKDIR /app
+
+# Copy production node_modules from builder
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 
 EXPOSE 8000
 

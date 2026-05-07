@@ -77,11 +77,11 @@ const validateQuery = (req, res, next) => {
     next();
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn(`[Query Validation] ❌ Invalid query params:`, error.errors);
+      logger.warn(`[Query Validation] ❌ Invalid query params:`, error.issues);
       
       return res.status(400).json({
         error: 'Invalid query parameters',
-        details: error.errors.map(err => ({
+        details: error.issues.map(err => ({
           field: err.path.join('.'),
           message: err.message
         }))

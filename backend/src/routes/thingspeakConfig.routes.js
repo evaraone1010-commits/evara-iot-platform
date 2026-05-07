@@ -7,7 +7,7 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../config/firebase.js");
 const logger = require("../utils/logger.js");
-const AppError = require("../utils/AppError.js");
+const { AppError } = require("../utils/AppError.js");
 const validate = require("../middleware/validate.js");
 const { checkOwnership } = require("../middleware/auth.middleware.js");
 const {

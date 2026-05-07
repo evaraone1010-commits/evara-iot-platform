@@ -19,6 +19,14 @@ describe("E2E Integration Test - Firebase Emulator + Express App", () => {
     });
   });
 
+  describe("GET /health", () => {
+    it("should return healthy status 200 for ALB checks", async () => {
+        const response = await request(server).get("/health");
+        expect(response.status).toBe(200);
+        expect(response.body).toHaveProperty("status");
+    });
+  });
+
   describe("API Fallback Router", () => {
     it("should return a 404 for unknown endpoints", async () => {
         const response = await request(server).get("/api/v1/doesnotexist");

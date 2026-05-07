@@ -96,24 +96,24 @@ const resolveTimestampValue = (value: TimestampLike): string | null => {
 // Constants for Water Quality
 const QUALITY_CONFIG = {
     Good: {
-color: '#10b981',
-bg: 'bg-emerald-500/10',
+        color: '#10b981',
+        bg: 'bg-emerald-500/10',
         border: 'border-emerald-500/20',
         text: 'text-emerald-500',
         icon: ShieldIcon,
         description: 'Water is safe for consumption and general use.'
     },
     Acceptable: {
-color: '#f59e0b',
-bg: 'bg-amber-500/10',
+        color: '#f59e0b',
+        bg: 'bg-amber-500/10',
         border: 'border-amber-500/20',
         text: 'text-amber-500',
         icon: AlertTriangle,
         description: 'TDS levels are slightly elevated. Consider filtration.'
     },
     Critical: {
-color: '#ef4444',
-bg: 'bg-red-500/10',
+        color: '#ef4444',
+        bg: 'bg-red-500/10',
         border: 'border-red-500/20',
         text: 'text-red-500',
         icon: AlertTriangle,
@@ -124,7 +124,7 @@ bg: 'bg-red-500/10',
 const EvaraTDSAnalytics = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
-const [chartRange, setChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H');
+    const [chartRange, setChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H');
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -591,7 +591,7 @@ const [chartRange, setChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H
                                 />
                             </div>
 
-{/* Bottom identity panels */}
+                            {/* Bottom identity panels */}
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/10">
                                     <p className="text-[10px] font-black uppercase tracking-widest text-emerald-500/80 mb-1">Water Quality</p>
@@ -600,50 +600,48 @@ const [chartRange, setChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H
                                 <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/10">
                                     <p className="text-[10px] font-black uppercase tracking-widest text-orange-500/80 mb-1">Temperature</p>
                                     <p className="text-lg font-black text-orange-500">{currentTemp || 0}°C</p>
-</div>
+                                </div>
                             </div>
                         </div>
 
-{/* Right column: stat cards + chart stacked */}
-                        <div className="flex flex-col gap-4">
-
-                            {/* 4 Stat Cards: 1×4 row */}
-                            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-                                <MiniStatCard
-                                    title="TDS Monitor"
-                                    label="TDS Value"
-                                    value={currentTds || 0}
-                                    unit="ppm"
-                                    icon={Droplets}
-                                    accentColor="#3b82f6"
-                                    iconBg="rgba(59,130,246,0.1)"
-                                />
-                                <MiniStatCard
-                                    title="Thermal Sense"
-                                    label="Temperature"
-                                    value={currentTemp || 0}
-                                    unit="°C"
-                                    icon={Thermometer}
-                                    accentColor="#f97316"
-                                    iconBg="rgba(249,115,22,0.1)"
-                                />
-                                <MiniStatCard
-                                    title="Purity Index"
-                                    label="Quality"
-                                    value={quality}
-                                    icon={qualityConfig.icon}
-                                    accentColor={qualityConfig.color}
-                                    iconBg={`${qualityConfig.color}1a`}
-                                />
-                                <MiniStatCard
-                                    title="Notifications"
-                                    label="Active Alerts"
-                                    value={alertsCount}
-                                    icon={Bell}
-                                    accentColor="#ef4444"
-                                    iconBg="rgba(239,68,68,0.1)"
-                                />
-                            </div>
+                    {/* Right column: stat cards + chart stacked */}
+                    <div className="flex flex-col gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <MiniStatCard
+                                title="TDS Monitor"
+                                label="TDS Value"
+                                value={currentTds || 0}
+                                unit="ppm"
+                                icon={Droplets}
+                                accentColor="#3b82f6"
+                                iconBg="rgba(59,130,246,0.1)"
+                            />
+                            <MiniStatCard
+                                title="Thermal Sense"
+                                label="Temperature"
+                                value={currentTemp || 0}
+                                unit="°C"
+                                icon={Thermometer}
+                                accentColor="#f97316"
+                                iconBg="rgba(249,115,22,0.1)"
+                            />
+                            <MiniStatCard
+                                title="Purity Index"
+                                label="Quality"
+                                value={quality}
+                                icon={qualityConfig.icon}
+                                accentColor={qualityConfig.color}
+                                iconBg={`${qualityConfig.color}1a`}
+                            />
+                            <MiniStatCard
+                                title="Notifications"
+                                label="Active Alerts"
+                                value={alertsCount}
+                                icon={Bell}
+                                accentColor="#ef4444"
+                                iconBg="rgba(239,68,68,0.1)"
+                            />
+                        </div>
 
                             {/* Chart Card — fills remaining height of right column */}
                             <div className="flex-1 rounded-2xl p-6 flex flex-col"

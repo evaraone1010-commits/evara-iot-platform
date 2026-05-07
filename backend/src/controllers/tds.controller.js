@@ -13,7 +13,8 @@ const logger = require("../utils/logger.js");
 const { DEVICE_STATUS, STATUS_THRESHOLD_MS } = require("../utils/deviceConstants.js");
 const { resolveFieldKey } = require("../utils/fieldMappingResolver.js");
 // ✅ ISSUE #5: Centralized error handler — use AppError for all errors
-const AppError = require("../utils/AppError.js");
+const { AppError } = require("../utils/AppError.js");
+const deviceState = require("../services/deviceStateService.js");
 
 // ✅ AUDIT FIX L2: Use shared resolveDevice utility (was duplicated in 3 controllers)
 const resolveDevice = require("../utils/resolveDevice.js");
@@ -21,89 +22,67 @@ const resolveDevice = require("../utils/resolveDevice.js");
 /**
  * Helper to resolve TDS metadata document
  * Metadata can be indexed by device DocID OR hardware device_id/node_id
- * Now includes full query fallbacks like resolveDevice
+ * Includes Redis caching to reduce Firestore read spikes
  */
 async function resolveMetadata(deviceDoc) {
   if (!deviceDoc) return null;
   const id = deviceDoc.id;
   const registry = deviceDoc.data();
 
-  logger.debug(`[resolveMetadata] Attempting to resolve metadata for device ${id}`);
+  // 1. Try Redis Cache first
+  const cacheKey = `metadata:evaratds:${id}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) {
+    logger.debug(`[resolveMetadata] ✅ Cache HIT for ${id}`);
+    return { id, data: () => cached, exists: true };
+  }
+
+  logger.debug(`[resolveMetadata] ⚠️ Cache MISS for ${id}, fetching from Firestore`);
   
-  // 1. Try lookup by device DocID (standard pattern - most common)
-  logger.debug(`[resolveMetadata] Step 1: Trying direct lookup by ID: ${id}`);
+  // 1. Try lookup by device DocID
   let metaDoc = await db.collection("evaratds").doc(id).get();
-  if (metaDoc.exists) {
-    logger.debug(`[resolveMetadata] ✅ Found by direct ID`);
+  
+  if (!metaDoc.exists && registry.device_id) {
+    const q1 = await db.collection("evaratds").where("device_id", "==", registry.device_id).limit(1).get();
+    if (!q1.empty) metaDoc = q1.docs[0];
+  }
+
+  if ((!metaDoc || !metaDoc.exists) && registry.node_id) {
+    const q2 = await db.collection("evaratds").where("node_id", "==", registry.node_id).limit(1).get();
+    if (!q2.empty) metaDoc = q2.docs[0];
+  }
+
+  if (metaDoc && metaDoc.exists) {
+    await cache.set(cacheKey, metaDoc.data(), 600); // Cache for 10 minutes
     return metaDoc;
   }
-  logger.debug(`[resolveMetadata] ❌ Not found by direct ID`);
-
-  // 2. Query by hardware device_id field
-  if (registry.device_id) {
-    logger.debug(`[resolveMetadata] Step 2: Trying query by device_id: "${registry.device_id}"`);
-    const q1 = await db.collection("evaratds").where("device_id", "==", registry.device_id).limit(1).get();
-    if (!q1.empty) {
-      logger.debug(`[resolveMetadata] ✅ Found by device_id`);
-      return q1.docs[0];
-    }
-    logger.debug(`[resolveMetadata] ❌ Not found by device_id`);
-    
-    // Also try case-insensitive match
-    logger.debug(`[resolveMetadata] Step 2b: Trying case-insensitive device_id: "${registry.device_id?.toLowerCase()}"`);
-    const q1Lower = await db.collection("evaratds").where("device_id", "==", registry.device_id?.toLowerCase()).limit(1).get();
-    if (!q1Lower.empty) {
-      logger.debug(`[resolveMetadata] ✅ Found by lowercase device_id`);
-      return q1Lower.docs[0];
-    }
-    logger.debug(`[resolveMetadata] ❌ Not found by lowercase device_id`);
-  } else {
-    logger.debug(`[resolveMetadata] ⚠️  No device_id in registry`);
-  }
-
-  // 3. Query by hardware node_id field
-  if (registry.node_id) {
-    logger.debug(`[resolveMetadata] Step 3: Trying query by node_id: "${registry.node_id}"`);
-    const q2 = await db.collection("evaratds").where("node_id", "==", registry.node_id).limit(1).get();
-    if (!q2.empty) {
-      logger.debug(`[resolveMetadata] ✅ Found by node_id`);
-      return q2.docs[0];
-    }
-    logger.debug(`[resolveMetadata] ❌ Not found by node_id`);
-    
-    // Also try case-insensitive match
-    logger.debug(`[resolveMetadata] Step 3b: Trying case-insensitive node_id: "${registry.node_id?.toLowerCase()}"`);
-    const q2Lower = await db.collection("evaratds").where("node_id", "==", registry.node_id?.toLowerCase()).limit(1).get();
-    if (!q2Lower.empty) {
-      logger.debug(`[resolveMetadata] ✅ Found by lowercase node_id`);
-      return q2Lower.docs[0];
-    }
-    logger.debug(`[resolveMetadata] ❌ Not found by lowercase node_id`);
-  } else {
-    logger.debug(`[resolveMetadata] ⚠️  No node_id in registry`);
-  }
-
-  // 4. Try lookup by the ID parameter itself (if it was hardware ID)
-  logger.debug(`[resolveMetadata] Step 4: Trying reverse lookup - treating ID as device_id`);
-  const q3 = await db.collection("evaratds").where("device_id", "==", id).limit(1).get();
-  if (!q3.empty) {
-    logger.debug(`[resolveMetadata] ✅ Found by ID as device_id`);
-    return q3.docs[0];
-  }
-  logger.debug(`[resolveMetadata] ❌ Not found by ID as device_id`);
-
-  logger.debug(`[resolveMetadata] Step 5: Trying reverse lookup - treating ID as node_id`);
-  const q4 = await db.collection("evaratds").where("node_id", "==", id).limit(1).get();
-  if (!q4.empty) {
-    logger.debug(`[resolveMetadata] ✅ Found by ID as node_id`);
-    return q4.docs[0];
-  }
-  logger.debug(`[resolveMetadata] ❌ Not found by ID as node_id`);
-
-  logger.debug(`[resolveMetadata] ❌ METADATA RESOLUTION COMPLETE: NO METADATA FOUND FOR ${id}`);
-  logger.debug(`[resolveMetadata] Registry had: device_id=${registry.device_id}, node_id=${registry.node_id}`);
   
   return null;
+}
+
+// Helper to throttle registry updates
+const lastUpdateMap = new Map(); // local memory throttle
+
+// ✅ AUDIT FIX: Purge entries older than 15 minutes every 5 minutes (prevents OOM)
+const FIFTEEN_MIN = 15 * 60 * 1000;
+setInterval(() => {
+    const cutoff = Date.now() - FIFTEEN_MIN;
+    for (const [id, time] of lastUpdateMap) {
+        if (time < cutoff) lastUpdateMap.delete(id);
+    }
+}, 5 * 60 * 1000).unref(); // .unref() prevents blocking graceful shutdown
+
+async function throttledRegistryUpdate(id, payload) {
+    const now = Date.now();
+    const lastUpdate = lastUpdateMap.get(id) || 0;
+    
+    // Only update Firestore if 5 minutes have passed since last update
+    if (now - lastUpdate < 300000) return; 
+
+    lastUpdateMap.set(id, now);
+    return db.collection('devices').doc(id).update(payload).catch(err => {
+        logger.warn(`[TDS] Throttled update failed for ${id}:`, err.message);
+    });
 }
 
 /**
@@ -288,9 +267,9 @@ exports.getTDSTelemetry = async (req, res, next) => {
       tdsHistory: [],  // Placeholder - will be fetched separately via /history endpoint
     };
 
-    // ✅ UPDATE device registry with latest telemetry and status
-    // This ensures AllNodes dashboard shows fresh data and correct status
-    await db.collection('devices').doc(id).update({
+    // ✅ THROTTLED UPDATE to device registry
+    // Prevents hitting Firestore write limits/costs on every polling cycle
+    throttledRegistryUpdate(id, {
       last_seen: new Date().toISOString(),
       last_online_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -302,9 +281,6 @@ exports.getTDSTelemetry = async (req, res, next) => {
         created_at: latestData.created_at,
         status: status
       }
-    }).catch(err => {
-      logger.warn("[TDS] Warning: Could not update device record:", err.message);
-      // Non-critical, don't fail the request
     });
 
     // Cache for 1 minute
@@ -390,7 +366,7 @@ exports.getTDSHistory = async (req, res, next) => {
     }
 
     // Fetch historical data from ThingSpeak
-    const url = `https://api.thingspeak.com/channels/${channel}/feeds.json?api_key=${apiKey}&results=${Math.min(limit, 288)}&timezone=UTC`;
+    const url = `https://api.thingspeak.com/channels/${channel}/feeds.json?api_key=${apiKey}&minutes=1440&results=${Math.min(limit, 8000)}&timezone=UTC`;
     const response = await axios.get(url, { timeout: 10000 });
 
     if (!response.data.feeds) {
@@ -628,7 +604,7 @@ exports.getTDSAnalytics = async (req, res, next) => {
     }
 
     // Fetch data from ThingSpeak
-    const url = `https://api.thingspeak.com/channels/${channel}/feeds.json?api_key=${apiKey}&results=288&timezone=UTC`;
+    const url = `https://api.thingspeak.com/channels/${channel}/feeds.json?api_key=${apiKey}&minutes=1440&results=8000&timezone=UTC`;
     const response = await axios.get(url, { timeout: 10000 });
 
     if (!response.data.feeds) {

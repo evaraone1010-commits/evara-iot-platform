@@ -1,16 +1,44 @@
-const redis = require("redis");
-const logger = require("../utils/logger.js");
+const Redis = require('ioredis');
+const logger = require('../utils/logger.js');
 
-const client = redis.createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379"
-});
+const redisUrl = process.env.REDIS_URL || null;
 
-client.on("error", (err) => {
-    logger.error("Redis Client Error", err);
-});
+if (!redisUrl) {
+  logger.warn('Redis URL not set; Redis features will remain disabled');
+  module.exports = null;
+  return;
+}
 
-client.connect().catch((err) => {
-    logger.error("Redis connection failed", err);
-});
+let client = null;
+try {
+  const useTls = redisUrl.startsWith('rediss:') || process.env.REDIS_TLS === 'true';
+  const redisOptions = {
+    ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
+    ...(process.env.REDIS_USERNAME ? { username: process.env.REDIS_USERNAME } : {}),
+    ...(useTls
+      ? {
+          tls: {
+            rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+          }
+        }
+      : {}),
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    retryStrategy: () => null
+  };
+
+  client = new Redis(redisUrl, redisOptions);
+
+  client.on('error', (err) => {
+    logger.error('Redis Client Error', err);
+  });
+
+  client.on('connect', () => {
+    logger.debug('Redis client connected');
+  });
+} catch (err) {
+  logger.error('Failed to initialize Redis client:', err && err.message ? err.message : err);
+  client = null;
+}
 
 module.exports = client;

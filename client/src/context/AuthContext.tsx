@@ -177,9 +177,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       async (firebaseUser: FirebaseUser | null) => {
         if (firebaseUser) {
           await fetchProfile(firebaseUser);
+          
+          // Connect socket now that user is authenticated
+          import("../services/api").then(({ socket }) => {
+            if (!socket.connected) socket.connect();
+          });
         } else {
           setUser(null);
           setLoading(false);
+          
+          // Disconnect socket when logged out
+          import("../services/api").then(({ socket }) => {
+            if (socket.connected) socket.disconnect();
+          });
         }
       },
     );

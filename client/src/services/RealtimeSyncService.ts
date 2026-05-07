@@ -6,6 +6,7 @@
 import { io, Socket } from 'socket.io-client';
 import { getAuth } from 'firebase/auth';
 import { useAuth } from '../context/AuthContext';
+import { getSocketUrl } from '../utils/runtimeUrls';
 
 interface RealtimeConfig {
   enabled: boolean;
@@ -52,7 +53,7 @@ class RealtimeSyncService {
         return true;
       }
 
-      this.socket = io(import.meta.env.VITE_WS_URL || 'http://localhost:8000', {
+      this.socket = io(getSocketUrl(), {
         auth: { token },
         transports: ['websocket', 'polling'],
         upgrade: true,

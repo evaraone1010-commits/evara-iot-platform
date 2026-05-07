@@ -10,7 +10,7 @@ const { getVersionKey, incrementCacheVersion } = require("../utils/cacheVersioni
 // ✅ PHASE 2: Audit logging (Task #12)
 const { logAudit } = require("../utils/auditLogger.js");
 // ✅ PHASE 2: HTTP status codes (Task #13)
-const AppError = require("../utils/AppError.js");
+const { AppError } = require("../utils/AppError.js");
 const { updateCustomerSchema } = require("../schemas/customer.schema.js");
 const { updateZoneSchema } = require("../schemas/zone.schema.js");
 
@@ -45,6 +45,8 @@ exports.createZone = async (req, res, next) => {
             country,
             zone_code: zone_code || "",
             description: description || "",
+            tenant_id: req.user.community_id || req.user.customer_id || req.user.uid,
+            owner_customer_id: req.user.customer_id || req.user.uid,
             created_at: new Date()
         };
 
@@ -54,13 +56,14 @@ exports.createZone = async (req, res, next) => {
 
         batch.set(docRef, zoneData);
         
+        const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
         batch.set(auditRef, {
             user_id: req.user.uid,
             action: 'CREATE',
             resource_type: 'zones',
             resource_id: docRef.id,
             timestamp: new Date(),
-            metadata: { zoneName, state, country },
+            metadata: sanitizeForFirestore({ zoneName, state, country }) || {},
             server_time: new Date().getTime()
         });
 
@@ -207,13 +210,14 @@ exports.updateZone = async (req, res, next) => {
             const batch = db.batch();
 
             batch.update(docRef, safeData);
+            const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
             batch.set(auditRef, {
                 user_id: req.user.uid,
                 action: 'UPDATE',
                 resource_type: 'zones',
                 resource_id: req.params.id,
                 timestamp: new Date(),
-                metadata: safeData,
+                metadata: sanitizeForFirestore(safeData) || {},
                 server_time: new Date().getTime()
             });
 
@@ -245,13 +249,14 @@ exports.updateZone = async (req, res, next) => {
         const batch = db.batch();
 
         batch.update(docRef, safeData);
+        const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
         batch.set(auditRef, {
             user_id: req.user.uid,
             action: 'UPDATE',
             resource_type: 'zones',
             resource_id: req.params.id,
             timestamp: new Date(),
-            metadata: safeData,
+            metadata: sanitizeForFirestore(safeData) || {},
             server_time: new Date().getTime()
         });
 
@@ -317,10 +322,32 @@ exports.deleteZone = async (req, res, next) => {
 exports.createCustomer = async (req, res, next) => {
     try {
         const { confirmPassword, password, regionFilter, ...customerData } = req.body;
+        if (!customerData.email || !password) {
+            throw new AppError("Email and password are required", 400);
+        }
+
+        // 1. Create the user in Firebase Authentication
+        let authUser;
+        try {
+            authUser = await admin.auth().createUser({
+                email: customerData.email,
+                password: password,
+                displayName: customerData.display_name || customerData.full_name || "User",
+            });
+            
+            // Set custom claims (optional but recommended for backend auth logic)
+            await admin.auth().setCustomUserClaims(authUser.uid, {
+                role: customerData.role || "customer",
+            });
+        } catch (authError) {
+            logger.error("[AdminController] Firebase Auth user creation failed:", authError);
+            throw new AppError(`Auth error: ${authError.message}`, 400);
+        }
+
         const customer = {
             display_name: customerData.display_name,
             full_name: customerData.full_name || customerData.display_name,
-            email: customerData.email,
+            email: customerData.email || "",
             phone_number: customerData.phone_number || customerData.phone || "",
             role: customerData.role || "customer",
             status: customerData.status || "active",
@@ -329,24 +356,29 @@ exports.createCustomer = async (req, res, next) => {
             plan: customerData.plan || "pro",
             created_at: admin.firestore.FieldValue.serverTimestamp(),
         };
+
+        // Firestore rejects undefined values, so strip them from audit payload.
+        const auditMetadata = Object.fromEntries(
+            Object.entries({
+                ...customerData,
+                regionFilter: regionFilter || null,
+            }).filter(([, value]) => value !== undefined)
+        );
         
-        const docRef = db.collection("customers").doc();
+        // 2. Use the Auth UID as the Firestore Document ID!
+        const docRef = db.collection("customers").doc(authUser.uid);
         const auditRef = db.collection("audit_logs").doc();
         const batch = db.batch();
 
         batch.set(docRef, customer);
+        const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
         batch.set(auditRef, {
             user_id: req.user.uid,
             action: 'CREATE',
             resource_type: 'customers',
             resource_id: docRef.id,
             timestamp: new Date(),
-            metadata: {
-                ...customerData,
-                regionFilter: regionFilter || null,
-                password: undefined,
-                confirmPassword: undefined,
-            },
+            metadata: sanitizeForFirestore(auditMetadata) || {},
             server_time: new Date().getTime()
         });
 
@@ -388,7 +420,13 @@ exports.getCustomers = async (req, res, next) => {
         logger.debug(`[AdminController] getCustomers query:`, { zone_id, community_id, role: req.user.role });
 
         if (req.user.role !== "superadmin") {
-            query = query.where("id", "==", req.user.customer_id || req.user.uid);
+            // Non-superadmins can only see their own customer record
+            const customerId = req.user.customer_id || req.user.uid;
+            const customerDoc = await db.collection("customers").doc(customerId).get();
+            const customers = customerDoc.exists ? [{ id: customerDoc.id, ...customerDoc.data() }] : [];
+            
+            await cache.set(cacheKey, { customers, count: customers.length }, 300);
+            return res.status(200).json({ customers, count: customers.length });
         } else {
             let hasEqualityFilter = false;
             if (zone_id && zone_id.trim() !== '') {
@@ -462,13 +500,14 @@ exports.updateCustomer = async (req, res, next) => {
         const batch = db.batch();
 
         batch.update(docRef, safeData);
+        const sanitizeForFirestore = require('../utils/sanitizeForFirestore.js');
         batch.set(auditRef, {
             user_id: req.user.uid,
             action: 'UPDATE',
             resource_type: 'customers',
             resource_id: req.params.id,
             timestamp: new Date(),
-            metadata: safeData,
+            metadata: sanitizeForFirestore(safeData) || {},
             server_time: new Date().getTime()
         });
 
@@ -685,7 +724,7 @@ exports.createNode = async (req, res, next) => {
         // 🔍 DEBUG: Log metadata BEFORE adding device type specific data
         logger.debug(`[createNode] 📝 METADATA BASE CREATED:`);
         logger.debug(`[createNode]   thingspeak_channel_id will be: "${metadata.thingspeak_channel_id}"`);
-        logger.debug(`[createNode]   thingspeak_read_api_key will be: "${metadata.thingspeak_read_api_key}"`);
+        logger.debug(`[createNode]   thingspeak_read_api_key will be: [REDACTED]`);
 
         // ✅ FIX #7: Add PROPER FIELD MAPPING SCHEMA (Semantic names → ThingSpeak fields)
         // BEFORE: sensor_field_mapping had backwards mapping [field] → "semantic_name"
@@ -731,7 +770,7 @@ exports.createNode = async (req, res, next) => {
             };
             logger.debug(`[createNode-FLOW] 📝 Storing Flow metadata:`);
             logger.debug(`[createNode-FLOW]   Channel ID: "${metadata.thingspeak_channel_id}"`);
-            logger.debug(`[createNode-FLOW]   API Key: "${metadata.thingspeak_read_api_key ? '***' : 'EMPTY'}"`);
+            logger.debug(`[createNode-FLOW]   API Key: [REDACTED]`);
         } else if (targetCol === "evaratds") {
             metadata.configuration = {
                 type: "TDS",
@@ -1337,7 +1376,10 @@ exports.getDashboardSummary = async (req, res, next) => {
             } else {
                 nodesQuery = nodesQuery.where("customer_id", "==", req.user.customer_id || req.user.uid);
             }
-            customersQuery = customersQuery.where("id", "==", req.user.customer_id || req.user.uid);
+            // Non-superadmins can only see their own customer record (use doc lookup)
+            const customerId = req.user.customer_id || req.user.uid;
+            const customerDoc = await db.collection("customers").doc(customerId).get();
+            customersQuery = customerDoc.exists ? Promise.resolve({ size: 1 }) : Promise.resolve({ size: 0 });
         }
 
         const devicesSnapshot = await nodesQuery.get();
@@ -1379,13 +1421,29 @@ exports.getDashboardSummary = async (req, res, next) => {
 
 exports.getHierarchy = async (req, res, next) => {
     try {
-        const cacheKey = "admin_hierarchy";
+        // ✅ FIX: Verify superadmin role and apply tenant filtering
+        const isSuperAdmin = req.user.role === "superadmin";
+        const userTenantId = req.user.community_id || req.user.customer_id || req.user.uid;
+        
+        const cacheKey = `admin_hierarchy_${isSuperAdmin ? 'all' : userTenantId}`;
         const cached = await cache.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
+        let zonesQuery = db.collection("zones");
+        // Non-superadmins only see zones in their tenant
+        if (!isSuperAdmin) {
+            zonesQuery = zonesQuery.where("tenant_id", "==", userTenantId);
+        }
+        
+        let customersQuery = db.collection("customers");
+        // Non-superadmins only see customers in their tenant
+        if (!isSuperAdmin) {
+            customersQuery = customersQuery.where("tenant_id", "==", userTenantId);
+        }
+
         const [zonesSnap, customersSnap] = await Promise.all([
-            db.collection("zones").get(),
-            db.collection("customers").get()
+            zonesQuery.get(),
+            customersQuery.get()
         ]);
 
         const zones = zonesSnap.docs.map(doc => ({ id: doc.id, ...doc.data(), customers: [] }));
@@ -1454,12 +1512,22 @@ exports.getAuditLogs = async (req, res, next) => {
 
 exports.getZoneStats = async (req, res, next) => {
     try {
-        const cacheKey = "zone_stats_all";
+        // ✅ FIX: Verify superadmin role and apply tenant filtering
+        const isSuperAdmin = req.user.role === "superadmin";
+        const userTenantId = req.user.community_id || req.user.customer_id || req.user.uid;
+        
+        const cacheKey = `zone_stats_${isSuperAdmin ? 'all' : userTenantId}`;
         const cached = await cache.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
+        let zonesQuery = db.collection("zones");
+        // Non-superadmins only see zones in their tenant
+        if (!isSuperAdmin) {
+            zonesQuery = zonesQuery.where("tenant_id", "==", userTenantId);
+        }
+
         const [zonesSnap, customersSnap, devicesSnap] = await Promise.all([
-            db.collection("zones").get(),
+            zonesQuery.get(),
             db.collection("customers").get(),
             db.collection("devices").get()
         ]);
@@ -1514,20 +1582,47 @@ exports.getZoneStats = async (req, res, next) => {
 exports.getDashboardInit = async (req, res, next) => {
     try {
         const isSuperAdmin = req.user.role === "superadmin";
-        const cacheKey = `dashboard_init_${isSuperAdmin ? 'admin' : req.user.customer_id || req.user.uid}`;
+        const userTenantId = req.user.community_id || req.user.customer_id || req.user.uid;
+        const cacheKey = `dashboard_init_${isSuperAdmin ? 'admin' : userTenantId}`;
         const cached = await cache.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
-        const [zonesRes, nodesRes, summaryRes] = await Promise.all([
-            new Promise(resolve => exports.getZones(req, { status: () => ({ json: resolve }) })),
-            new Promise(resolve => exports.getNodes(req, { status: () => ({ json: resolve }) })),
-            new Promise(resolve => exports.getDashboardSummary(req, { status: () => ({ json: resolve }) }))
+        // Fetch all data in parallel
+        const [zonesSnap, nodesSnap, devicesSnap, customersSnap] = await Promise.all([
+            db.collection("zones").get(),
+            db.collection("devices").get(),
+            db.collection("devices").get(),
+            db.collection("customers").get()
         ]);
 
+        // Build zones list
+        const zones = zonesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        // Build nodes list (alias for devices in this context)
+        const nodes = nodesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        // Build summary stats
+        const devices = devicesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const customers = customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        const totalDevices = devices.length;
+        const onlineDevices = devices.filter(d => d.status === 'ONLINE' || d.status === 'Online').length;
+        const offlineDevices = totalDevices - onlineDevices;
+        const totalCustomers = customers.length;
+
         const result = {
-            summary: summaryRes,
-            zones: zonesRes,
-            nodes: nodesRes,
+            summary: {
+                devices: {
+                    total: totalDevices,
+                    online: onlineDevices,
+                    offline: offlineDevices,
+                    health_score: totalDevices > 0 ? Math.round((onlineDevices / totalDevices) * 100) : 0
+                },
+                customers: { total: totalCustomers },
+                zones: { total: zones.length }
+            },
+            zones: zones.map(z => ({ id: z.id, zoneName: z.zoneName, state: z.state })),
+            nodes: nodes.slice(0, 10), // Limit to 10 for performance
             timestamp: new Date().toISOString()
         };
 
@@ -1663,19 +1758,19 @@ exports.updateDeviceVisibility = async (req, res, next) => {
 /**
  * PATCH /api/admin/devices/:id/parameters
  * Superadmin controls which analytics parameters are visible to the customer (Image 2 toggles)
- * Body: { "customer_config": { "showAlerts": false, "showConsumption": true, ... } }
+ * Body: { "parameters": { "showAlerts": false, "showConsumption": true, ... } }
  */
 exports.updateDeviceParameters = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { customer_config } = req.body;
+        const { parameters } = req.body;
 
-        if (!customer_config || typeof customer_config !== "object" || Array.isArray(customer_config)) {
-            return res.status(400).json({ error: "customer_config must be a valid object" });
+        if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+            return res.status(400).json({ error: "parameters must be a valid object" });
         }
 
         // Validate that all values are booleans
-        for (const [key, value] of Object.entries(customer_config)) {
+        for (const [key, value] of Object.entries(parameters)) {
             if (typeof value !== "boolean") {
                 return res.status(400).json({
                     error: `Invalid value for "${key}": all parameter values must be true or false`
@@ -1705,7 +1800,7 @@ exports.updateDeviceParameters = async (req, res, next) => {
         }
 
         await db.collection("devices").doc(deviceDoc.id).update({
-            customer_config
+            customer_config: parameters
         });
 
         // Flush customer-facing caches so change reflects immediately
@@ -1720,15 +1815,15 @@ exports.updateDeviceParameters = async (req, res, next) => {
         if (customerId && global.io) {
             global.io.to(`customer:${customerId}`).emit("device:updated", {
                 deviceId: deviceDoc.id,
-                changes: { customer_config },
+                changes: { parameters },
                 success: true,
                 timestamp: new Date().toISOString()
             });
             logger.debug(`[AdminController] ✅ device:updated event emitted for parameter changes: ${deviceDoc.id}`);
         }
 
-        logger.debug(`[AdminController] Device ${id} parameters updated:`, customer_config);
-        return res.status(200).json({ success: true, customer_config });
+        logger.debug(`[AdminController] Device ${id} parameters updated:`, parameters);
+        return res.status(200).json({ success: true, parameters });
     } catch (error) {
         logger.error("[AdminController] updateDeviceParameters error:", error);
         return next(error);

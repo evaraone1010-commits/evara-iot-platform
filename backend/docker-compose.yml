@@ -15,7 +15,7 @@ services:
     # ✅ PORT CONFLICT FIX: Always restart on exit, with backoff
     restart: unless-stopped
     # ✅ Kill any orphaned processes before starting
-    entrypoint: ["/bin/sh", "-c", "pkill -f 'node.*src/server.js' 2>/dev/null || true; sleep 2; exec node src/server.js"]
+    entrypoint: ["/bin/sh", "-c", "pkill -f 'node.*src/bootstrap.js' 2>/dev/null || true; sleep 2; exec node src/bootstrap.js"]
     # ✅ Health check for Docker Compose to detect hung processes
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/v1/health"]
@@ -26,17 +26,19 @@ services:
 
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
+    # Expose internally only; do NOT publish Redis to the host in production
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
 
   mosquitto:
     image: eclipse-mosquitto:latest
-    ports:
-      - "1883:1883"      # Authenticated MQTT (plaintext, but requires auth + ACL)
-      - "8883:8883"      # MQTTS (MQTT over TLS) — use this in production
-      - "9001:9001"      # WebSockets with TLS
+    # Do not publish MQTT ports to the host in production; use internal network only
+    expose:
+      - "1883"
+      - "8883"
+      - "9001"
     volumes:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
