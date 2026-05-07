@@ -6,14 +6,15 @@ import axios, {
 import { io } from 'socket.io-client';
 import { auth } from "../lib/firebase";
 import { getApiBaseUrl, getSocketUrl } from "../utils/runtimeUrls";
+import logger from "../utils/logger";
 
 // Use same-domain defaults unless an explicit env override is provided.
 const VITE_API_URL = getApiBaseUrl();
 const SOCKET_URL = getSocketUrl();
 
-console.log('[API Config] VITE_API_URL:', VITE_API_URL);
-console.log('[API Config] SOCKET_URL:', SOCKET_URL);
-console.log('[API Config] DEV mode:', import.meta.env.DEV);
+logger.log('[API Config] VITE_API_URL:', VITE_API_URL);
+logger.log('[API Config] SOCKET_URL:', SOCKET_URL);
+logger.log('[API Config] DEV mode:', import.meta.env.DEV);
 
 export const socket = io(SOCKET_URL, {
   autoConnect: false, // Prevents 400 Bad Request on page load before auth is ready
@@ -45,7 +46,7 @@ api.interceptors.request.use(
       const user = auth.currentUser;
       
       if (!user) {
-        console.warn('[API Interceptor] No user logged in, skipping token injection');
+        logger.warn('[API Interceptor] No user logged in, skipping token injection');
         return config;
       }
 
@@ -53,9 +54,9 @@ api.interceptors.request.use(
       const token = await user.getIdToken(true); // Force refresh
       config.headers.Authorization = `Bearer ${token}`;
       
-      console.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
+      logger.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
     } catch (error) {
-      console.error("[API Interceptor] Failed to get token:", error);
+      logger.error("[API Interceptor] Failed to get token:", error);
       // Don't throw - let request proceed (will fail with 401, which is correct)
     }
     return config;
@@ -86,7 +87,7 @@ api.interceptors.response.use(
     const errorData = error.response?.data as any;
     const message = errorData?.error?.message || errorData?.error || error.message;
     
-    console.error(`[API Error] ${status || 'Network'}: ${typeof message === 'object' ? JSON.stringify(message) : message}`, {
+    logger.error(`[API Error] ${status || 'Network'}: ${typeof message === 'object' ? JSON.stringify(message) : message}`, {
         url: error.config?.url,
         method: error.config?.method,
         headers: error.config?.headers
@@ -98,10 +99,10 @@ api.interceptors.response.use(
       const authHeader = (error.config?.headers as any)?.Authorization;
 
       if (!hasCurrentUser) {
-        console.warn('[API Error] 401 received while logged out. This can happen during route transitions after sign-out.');
+        logger.warn('[API Error] 401 received while logged out. This can happen during route transitions after sign-out.');
       } else {
-        console.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
-        console.error('[API Error] Authorization header present:', !!authHeader);
+        logger.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
+        logger.error('[API Error] Authorization header present:', !!authHeader);
       }
     }
     

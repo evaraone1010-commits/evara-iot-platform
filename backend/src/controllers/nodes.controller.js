@@ -137,7 +137,7 @@ exports.getNodes = async (req, res, next) => {
         //
         // The ~500ms DB call is worth the accuracy of real-time status
         // We'll implement targeted field-level caching later instead
-        const shouldSkipCache = true;  // Always get fresh status data
+        const shouldSkipCache = false;  // Use cache to improve performance
         
         if (!shouldSkipCache && shouldUseCache) {
             const cachedNodes = await cache.get(nodesCacheKey);

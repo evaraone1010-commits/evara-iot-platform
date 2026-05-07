@@ -28,6 +28,7 @@ const thingspeakConfigRoutes = require("./thingspeakConfig.routes.js");
 const globalSaaSAuth = [requireAuth, tenantCheck, rbac()];
 
 // Public routes
+router.get("/health", (req, res) => res.status(200).json({ status: "ok", timestamp: new Date().toISOString() }));
 router.use("/auth", authRoutes);
 router.get("/public/zones", getPublicZones);
 

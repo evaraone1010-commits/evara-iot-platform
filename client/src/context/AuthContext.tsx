@@ -39,6 +39,7 @@ import {
 } from "firebase/auth";
 import type { User as FirebaseUser } from "firebase/auth";
 import { auth } from "../lib/firebase";
+import logger from "../utils/logger";
 
 export type UserRole = "superadmin" | "community_admin" | "customer";
 export type UserPlan = "free" | "pro" | "enterprise";
@@ -131,7 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const fetchProfile = useCallback(
     async (firebaseUser: FirebaseUser) => {
       try {
-        console.log("[AuthContext] Starting profile fetch for:", firebaseUser.email);
+        logger.log("[AuthContext] Starting profile fetch for:", firebaseUser.email);
         
         // Get ID token
         const idToken = await firebaseUser.getIdToken();
@@ -146,7 +147,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         });
 
         if (!response.ok) {
-          console.error("[AuthContext] Failed to fetch profile:", response.status, response.statusText);
+          logger.error("[AuthContext] Failed to fetch profile:", response.status, response.statusText);
           setUser(null);
           setLoading(false);
           return;
@@ -155,14 +156,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const data = await response.json();
         
         if (data.success && data.user) {
-          console.log(`[AuthContext] ✅ Profile fetched - role: ${data.user.role}`);
+          logger.log(`[AuthContext] ✅ Profile fetched - role: ${data.user.role}`);
           setUser(extractUser(data.user));
         } else {
-          console.error("[AuthContext] Invalid response from backend:", data);
+          logger.error("[AuthContext] Invalid response from backend:", data);
           setUser(null);
         }
       } catch (err) {
-        console.error("[AuthContext] Error fetching profile:", err);
+        logger.error("[AuthContext] Error fetching profile:", err);
         setUser(null);
       } finally {
         setLoading(false);
@@ -222,7 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
         // Step 3: Verify token with backend and get profile.
         // Retried up to 3 times with backoff to handle transient network hiccups.
-        console.log("[AuthContext] Verifying token with backend...");
+        logger.log("[AuthContext] Verifying token with backend...");
         let response: Response;
         let data: any;
         try {
@@ -238,30 +239,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           response = result.response;
           data = result.data;
         } catch (fetchErr: any) {
-          console.error("[AuthContext] Backend unreachable after retries:", fetchErr);
+          logger.error("[AuthContext] Backend unreachable after retries:", fetchErr);
           setLoading(false);
           return { success: false, error: "Cannot reach server. Please check your connection." };
         }
 
         if (!response.ok) {
-          console.error("[AuthContext] Token verification failed:", response.status, data);
+          logger.error("[AuthContext] Token verification failed:", response.status, data);
           setLoading(false);
           return { success: false, error: data?.error ?? "Token verification failed" };
         }
 
         if (data.success && data.user) {
           const finalUser = extractUser(data.user);
-          console.log(`[AuthContext] ✅ Login successful - role: ${finalUser.role}`);
+          logger.log(`[AuthContext] ✅ Login successful - role: ${finalUser.role}`);
           setUser(finalUser);
           setLoading(false);
           return { success: true, user: finalUser };
         }
 
-        console.error("[AuthContext] Invalid response from backend:", data);
+        logger.error("[AuthContext] Invalid response from backend:", data);
         setLoading(false);
         return { success: false, error: "Invalid response from server" };
       } catch (err: any) {
-        console.error("[AuthContext] Login error:", err);
+        logger.error("[AuthContext] Login error:", err);
         setLoading(false);
         return {
           success: false,
