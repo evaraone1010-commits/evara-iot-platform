@@ -28,7 +28,7 @@ async function test() {
     }
     
     const authResponse = await axios.post(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${firebaseApiKey || 'AIzaSyAkXF8hDnEb_cHhiXRjk5Kb7ZfL2g5Fwwk'}`,
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${firebaseApiKey || process.env.VITE_FIREBASE_API_KEY || 'YOUR_API_KEY_HERE'}`,
       { token: customToken, returnSecureToken: true }
     );
     
