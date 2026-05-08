@@ -134,6 +134,7 @@ function App() {
                                             </Route>
 
                                             {/* Catch-all redirect to Map */}
+                                            <Route path="*" element={<Navigate to="/map" replace />} />
                                         </Routes>
                                     </Suspense>
                                 </GlobalBackground>

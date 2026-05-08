@@ -128,7 +128,7 @@ if (process.env.NODE_ENV === "production") {
     if (fs.existsSync(publicPath)) {
         app.use(express.static(publicPath));
         
-        app.get("/{*splat}", (req, res, next) => {
+        app.get("*", (req, res, next) => {
             if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
                 return next();
             }
