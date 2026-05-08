@@ -7,10 +7,15 @@ const { app, allowedOrigins } = require("./app.js");
 const { initSocket } = require("./socket.js");
 const validateEnv = require("./utils/validateEnv.js");
 const { logger } = require("./config/pino.js");
+const { hasExplicitFirebaseCredentials, getFirebaseCredentialSource } = require("./config/firebase.js");
 const cache = require("./config/cache.js");
 const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
 const TelemetryArchiveService = require("./services/telemetryArchiveService.js");
 const { startWorker } = require("./workers/telemetryWorker.js");
+
+function hasFirestoreConfig() {
+  return hasExplicitFirebaseCredentials();
+}
 
 // ============================================================================
 // Global State
@@ -79,8 +84,10 @@ async function startServer() {
     server.listen(PORT, async () => {
         logger.info(`[Server] ✅ Backend running on port ${PORT}`);
         
-        if (process.env.NODE_ENV !== 'test') {
+        if (process.env.NODE_ENV !== 'test' && hasFirestoreConfig()) {
           try { await initializeCacheVersions(); } catch (err) { logger.warn({ error: err.message }, '[Server] Cache versioning failed'); }
+        } else if (process.env.NODE_ENV !== 'test') {
+          logger.info(`[Server] Skipping Firestore cache version initialization; Firebase credential source is '${getFirebaseCredentialSource()}'.`);
         }
 
         // Schedule daily telemetry cleanup
@@ -99,9 +106,11 @@ async function startServer() {
             });
         } catch (err) { logger.error({ error: err.message }, '[Server] Cleanup scheduling failed'); }
         
-        if (process.env.NODE_ENV !== "test") {
+        if (process.env.NODE_ENV !== "test" && hasFirestoreConfig()) {
           initializeMqttIngestion();
           startWorker();
+        } else if (process.env.NODE_ENV !== "test") {
+          logger.info(`[Server] Skipping telemetry worker startup; Firebase credential source is '${getFirebaseCredentialSource()}'.`);
         }
     });
   } catch (error) {

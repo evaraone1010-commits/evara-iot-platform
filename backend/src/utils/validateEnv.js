@@ -6,7 +6,8 @@
  */
 
 const { logger } = require("../config/pino.js"); // ✅ AUDIT FIX M10: Import logger for structured logging
-const Redis = require("ioredis");
+const fs = require("fs");
+const path = require("path");
 
 const REQUIRED_VARS = [
     "ALLOWED_ORIGINS",
@@ -31,6 +32,9 @@ const SECRETS_MANAGER_VARS = [
 
 function validateEnv() {
     const isProd = process.env.NODE_ENV === 'production';
+    const localServiceAccountPath = path.join(__dirname, "..", "..", "service-account.json");
+    const hasLocalServiceAccount = fs.existsSync(localServiceAccountPath);
+    const hasGoogleAppCredsPath = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
     
     // Always required
     const missing = REQUIRED_VARS.filter(v => !process.env[v]);
@@ -40,10 +44,14 @@ function validateEnv() {
     } else {
         const missingFirebase = FIREBASE_VARS.filter(v => !process.env[v]);
         if (missingFirebase.length > 0) {
-            logger.warn(
-                "⚠️  Firebase service-account env vars are not configured; dev will rely on ADC or emulator if available.",
-                { missingFirebase }
-            );
+            if (hasLocalServiceAccount || hasGoogleAppCredsPath) {
+                logger.info("[Env] Firebase env vars are missing, but explicit dev credentials are available (local service-account or GOOGLE_APPLICATION_CREDENTIALS).");
+            } else {
+                logger.warn(
+                    "⚠️  Firebase service-account env vars are not configured; dev will rely on ADC or emulator if available.",
+                    { missingFirebase }
+                );
+            }
         }
     }
     
@@ -151,6 +159,7 @@ async function testRedisConnection(timeoutMs = 5000) {
         return false;
     }
 
+    const Redis = require("ioredis");
     const redis = new Redis(process.env.REDIS_URL, buildRedisOptions());
     const timeout = new Promise((_, reject) => {
         const timer = setTimeout(() => {

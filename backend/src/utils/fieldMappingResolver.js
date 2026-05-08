@@ -10,6 +10,24 @@
 
 const logger = require('./logger.js');
 
+const INTERNAL_KEY_ALIASES = {
+  water_level: ["water_level", "water_level_raw_sensor_reading", "level", "level_percentage"],
+  flow_rate: ["flow_rate", "flow", "flowrate"],
+  total_reading: ["total_reading", "current_reading", "meter_reading", "totalizer", "total_liters"],
+  tds_value: ["tds_value", "tds", "tds_reading"],
+  temperature: ["temperature", "temp", "temperature_field"],
+};
+
+function normalize(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+function matchesInternalKey(value, internalKey) {
+  const target = normalize(value);
+  const aliases = INTERNAL_KEY_ALIASES[internalKey] || [internalKey];
+  return aliases.some((k) => normalize(k) === target);
+}
+
 module.exports = {
   /**
    * STABLE ANCHOR: Resolve field position using channel metadata
@@ -31,10 +49,25 @@ module.exports = {
       return null;
     }
 
-    // Step 1: Get the field NAME from sensor_field_mapping
-    // e.g., internalKey="flow_rate" → fieldName="Flow Rate"
-    const fieldName = fieldMapping[internalKey];
+    // Step 1: Resolve field name from mapping.
+    // Supports two shapes:
+    // A) internal -> channel label  (new)
+    // B) fieldX -> internal key     (legacy/reverse)
+    let fieldName = fieldMapping[internalKey];
+
     if (!fieldName) {
+      // Reverse shape: find fieldX where value matches internal key (with aliases)
+      const reverseMatch = Object.entries(fieldMapping).find(([fieldKey, mappedValue]) => {
+        if (typeof fieldKey !== "string" || !fieldKey.startsWith("field")) return false;
+        return matchesInternalKey(mappedValue, internalKey);
+      });
+
+      if (reverseMatch) {
+        const [resolvedFieldKey] = reverseMatch;
+        logger.debug(`[FieldMappingResolver] ✅ Resolved ${internalKey} directly from reverse mapping → ${resolvedFieldKey}`);
+        return resolvedFieldKey;
+      }
+
       logger.warn(`[FieldMappingResolver] Internal key not in mapping: ${internalKey}`, { fieldMapping });
       return null;
     }

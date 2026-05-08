@@ -1,3 +1,3 @@
-const { db, admin } = require("./firebase-secure");
+const { db, admin, hasExplicitFirebaseCredentials, getFirebaseCredentialSource } = require("./firebase-secure");
 
-module.exports = { db, admin };
+module.exports = { db, admin, hasExplicitFirebaseCredentials, getFirebaseCredentialSource };

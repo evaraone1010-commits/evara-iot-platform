@@ -32,11 +32,19 @@
 const { db } = require("../config/firebase.js");
 const logger = require("./logger.js");
 
+function hasFirestoreConfig() {
+    return !!(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY);
+}
+
 /**
  * Build versioned cache key
  * Returns: "zones_list_v123" (123 is current version number)
  */
 async function getVersionKey(prefix) {
+    if (!hasFirestoreConfig()) {
+        return `${prefix}_v1`;
+    }
+
     try {
         const versionDoc = await db.collection('_cache_versions').doc(prefix).get();
         const version = versionDoc.exists ? versionDoc.data().version : 1;
@@ -53,6 +61,11 @@ async function getVersionKey(prefix) {
  * Called when a resource is created/updated/deleted
  */
 async function incrementCacheVersion(resourceType) {
+    if (!hasFirestoreConfig()) {
+        logger.debug(`[CacheVersioning] Skipping ${resourceType} version increment; Firestore is not configured in this environment.`);
+        return;
+    }
+
     try {
         const versionRef = db.collection('_cache_versions').doc(resourceType);
         
@@ -75,6 +88,11 @@ async function incrementCacheVersion(resourceType) {
  * Call this during app startup
  */
 async function initializeCacheVersions() {
+    if (!hasFirestoreConfig()) {
+        logger.debug("[CacheVersioning] Skipping cache version initialization; Firestore is not configured in this environment.");
+        return;
+    }
+
     const resourceTypes = [
         'zones',
         'devices', 
