@@ -57,8 +57,9 @@ const Login = () => {
     };
   }, [mode, isSuperAdmin]);
 
-  // If already logged in, redirect away from login page
-  if (isAuthenticated && user) {
+  // If already logged in and not currently in the middle of a login attempt, redirect away
+  // Only redirect if there is no error currently displayed (to handle Access Denied cases)
+  if (isAuthenticated && user && !isLoading && !error) {
     return <Navigate to="/map" replace />;
   }
 
@@ -101,7 +102,7 @@ const Login = () => {
       if (mode === "signin") {
         // Race login against timeout
         const result = (await Promise.race([
-          loginFn(email, password),
+          loginFn(email, password, selectedRole || undefined),
           timeoutPromise,
         ])) as Awaited<ReturnType<typeof loginFn>>;
 

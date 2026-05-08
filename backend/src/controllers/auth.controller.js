@@ -107,7 +107,7 @@ exports.getUserProfile = async (req, res, next) => {
  */
 exports.verifyToken = async (req, res) => {
   try {
-    const { idToken, profile: profileInput = {} } = req.body;
+    const { idToken, profile: profileInput = {}, requestedRole } = req.body;
 
     if (!idToken) {
       return res.status(400).json({
@@ -214,30 +214,35 @@ exports.verifyToken = async (req, res) => {
 
           logger.debug(`[AuthController] ✅ User FOUND in CUSTOMERS collection`);
         } else {
-          logger.debug(`[AuthController] ⚠️ User NOT found in either superadmins or customers. Auto-provisioning customer profile...`);
-
-          const bootstrapProfile = {
-            email: decodedToken.email || "",
-            full_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
-            display_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
-            role: "customer",
-            plan: "pro",
-            status: profileInput.status || "active",
-            phone_number: profileInput.phone_number || "",
-            zone_id: profileInput.zone_id || null,
-            community_id: profileInput.community_id || null,
-            created_at: new Date().toISOString(),
-          };
-
-          await db.collection("customers").doc(decodedToken.uid).set(bootstrapProfile, { merge: true });
-          profileData = bootstrapProfile;
-          sourceCollection = "customers";
-          role = "customer";
-          logger.debug(`[AuthController] ✅ Auto-provisioned user in CUSTOMERS collection`);
+          // Auto-provisioning logic (only if not a superadmin login attempt)
+          if (requestedRole !== 'superadmin') {
+            logger.debug(`[AuthController] ⚠️ User NOT found. Auto-provisioning customer profile...`);
+            const bootstrapProfile = {
+              email: decodedToken.email || "",
+              full_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
+              display_name: decodedToken.name || decodedToken.email?.split("@")[0] || "User",
+              role: "customer",
+              plan: "pro",
+              status: "active",
+              created_at: new Date().toISOString(),
+            };
+            await db.collection("customers").doc(decodedToken.uid).set(bootstrapProfile);
+            profileData = bootstrapProfile;
+            role = "customer";
+          }
         }
       } catch (err) {
         logger.error(`[AuthController] Error checking customers:`, err.message);
       }
+    }
+
+    // ─── ROLE VALIDATION ───
+    if (requestedRole && requestedRole !== role) {
+      logger.warn(`[AuthController] 🚫 Role mismatch: User ${decodedToken.email} tried to log in as ${requestedRole} but is actually a ${role}`);
+      return res.status(403).json({
+        success: false,
+        error: `Access Denied: Your account is registered as a ${role}. Please use the correct login portal.`
+      });
     }
 
     logger.debug(`[AuthController] ✨ FINAL RESPONSE: role=${role}, sourceCollection=${sourceCollection}`);

@@ -62,6 +62,7 @@ interface AuthContextType {
   login: (
     email: string,
     password: string,
+    requestedRole?: string,
   ) => Promise<{ success: boolean; user?: User; error?: string }>;
   signup: (
     email: string,
@@ -202,6 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     async (
       email: string,
       password: string,
+      requestedRole?: string,
     ): Promise<{ success: boolean; user?: User; error?: string }> => {
       setLoading(true);
       try {
@@ -217,12 +219,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           return { success: false, error: "Login failed" };
         }
 
-        // Step 2: Get a FRESH ID token (forceRefresh=true avoids sending a
-        //         cached token that the backend might not have indexed yet)
+        // Step 2: Get a FRESH ID token
         const idToken = await credential.user.getIdToken(true);
 
         // Step 3: Verify token with backend and get profile.
-        // Retried up to 3 times with backoff to handle transient network hiccups.
         logger.log("[AuthContext] Verifying token with backend...");
         let response: Response;
         let data: any;
@@ -231,7 +231,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             const res = await fetch("/api/v1/auth/verify-token", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ idToken }),
+              body: JSON.stringify({ idToken, requestedRole }),
             });
             const json = await res.json();
             return { response: res, data: json };
@@ -247,6 +247,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         if (!response.ok) {
           logger.error("[AuthContext] Token verification failed:", response.status, data);
           setLoading(false);
+          
+          // If role mismatch, we must sign out from Firebase too, otherwise the user
+          // stays authenticated in Firebase but doesn't have a profile in our app state.
+          if (response.status === 403) {
+            await signOut(auth);
+          }
+          
           return { success: false, error: data?.error ?? "Token verification failed" };
         }
 

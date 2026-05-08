@@ -28,7 +28,19 @@ class HybridDataResolver {
         throw new Error(`Device ${deviceId} not found`);
       }
 
-      const device = deviceDoc.data();
+      const registry = deviceDoc.data();
+      let device = { ...registry };
+
+      // ThingSpeak credentials are often stored in the typed collection (e.g., evaratank)
+      // while the 'devices' collection is just a central registry.
+      if (!device.thingspeak_channel_id && registry.device_type) {
+        const type = registry.device_type.toLowerCase();
+        logger.debug(`[HybridDataResolver] Credentials missing in registry, checking typed collection: ${type}`);
+        const metaDoc = await db.collection(type).doc(deviceId).get();
+        if (metaDoc.exists) {
+          device = { ...device, ...metaDoc.data() };
+        }
+      }
       const dataSource = this.determineDataSource(startDate, endDate);
 
       logger.debug(`📍 Data source: ${dataSource}`);
@@ -79,21 +91,9 @@ class HybridDataResolver {
     const policy = TelemetryArchiveService.getRetentionPolicy();
 
     const startDaysAgo = Math.floor((now - startDate) / (1000 * 60 * 60 * 24));
-    const endDaysAgo = Math.floor((now - endDate) / (1000 * 60 * 60 * 24));
-
-    logger.debug(`📊 Date analysis: startDaysAgo=${startDaysAgo}, endDaysAgo=${endDaysAgo}, keepDays=${policy.keepDays}`);
-
-    // All data is within 14-day window → Use database (fastest)
-    if (startDaysAgo <= policy.keepDays) {
-      return "database";
-    }
-
-    // All data is older than 30 days → Use ThingSpeak (will be deleted from DB)
-    if (endDaysAgo > policy.archiveAfterDays) {
-      return "thingspeak";
-    }
-
-    // Data spans across boundary → Use hybrid (both sources)
+    
+    // For reports and exports, always use hybrid to ensure no data is missed
+    // if Firestore collection is empty for certain devices.
     return "hybrid";
   }
 
@@ -130,6 +130,7 @@ class HybridDataResolver {
           ...doc.data(),
           _id: doc.id,
           _source: "database",
+          timestamp: doc.data().timestamp.toDate() // Ensure Date object
         });
       });
 
@@ -159,15 +160,22 @@ class HybridDataResolver {
 
       const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json`;
 
+      // Format dates to ThingSpeak's preferred format: YYYY-MM-DD%20HH:NN:SS
+      const formatDate = (date) => {
+        return date.toISOString().replace("T", " ").split(".")[0];
+      };
+
       const params = {
         api_key: readApiKey,
-        start: startDate.toISOString().split("T")[0],
-        end: endDate.toISOString().split("T")[0],
-        results: options.limit || 8000, // ThingSpeak limit is 8000
+        start: formatDate(startDate),
+        end: formatDate(endDate),
+        results: options.limit || 8000,
         timezone: "Asia/Kolkata",
       };
 
-      const response = await axios.get(url, { params, timeout: 10000 });
+      logger.debug(`[ThingSpeak] Request params:`, params);
+
+      const response = await axios.get(url, { params, timeout: 15000 });
 
       if (!response.data.feeds) {
         logger.warn("⚠️ No feeds in ThingSpeak response");

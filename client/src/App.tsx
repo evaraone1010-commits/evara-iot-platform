@@ -103,7 +103,9 @@ function App() {
                                                     <Route path="/evaraflow" element={<EvaraFlowAnalytics />} />
                                                     <Route path="/evaraflow/:hardwareId" element={<EvaraFlowAnalytics />} />
                                                     <Route path="/evaratds/:id" element={<EvaraTDSAnalytics />} />
-                                                    <Route path="/admin" element={<Admin />} />
+                                                    <Route element={<ProtectedRoute allowedRoles={['superadmin', 'community_admin']} />}>
+                                                        <Route path="/admin" element={<Admin />} />
+                                                    </Route>
                                                 </Route>
 
                                                 {/* Admin Routes (Super Admin) */}

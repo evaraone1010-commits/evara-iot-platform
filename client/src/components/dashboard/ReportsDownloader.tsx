@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { deviceService } from '../../services/DeviceService';
 
 interface ReportsDownloaderProps {
   nodes?: any[];
@@ -6,7 +7,57 @@ interface ReportsDownloaderProps {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function buildCSV(nodes: any[], selectedDevice: string, startDate: string, endDate: string): string {
+const HEADER_LABELS: Record<string, string> = {
+  water_level: 'Water Level',
+  flow_rate: 'Flow Rate',
+  total_reading: 'Total Reading',
+  tds_value: 'TDS Value',
+  temperature: 'Temperature',
+  battery: 'Battery',
+  signal: 'Signal'
+};
+
+function buildCSV(
+  nodes: any[], 
+  selectedDevice: string, 
+  startDate: string, 
+  endDate: string, 
+  telemetryData?: any[], 
+  fieldMapping?: any
+): string {
+  // 1. If a specific device is selected, we expect a telemetry report
+  if (selectedDevice !== 'all') {
+    const mapping = fieldMapping || {};
+    const internalKeys = Object.values(mapping).filter(v => typeof v === 'string') as string[];
+    
+    // Create headers: timestamp + human readable sensor names
+    const headers = ['timestamp', ...internalKeys.map(k => HEADER_LABELS[k] || k)];
+    
+    if (!telemetryData || telemetryData.length === 0) {
+      // Return just headers if no data, or a message row
+      return [headers, ['No data found for this period']].map(r => r.join(',')).join('\n');
+    }
+
+    const rows = telemetryData.map((record: any) => {
+      const timestamp = record.timestamp instanceof Date 
+        ? record.timestamp.toISOString() 
+        : new Date(record.timestamp).toISOString();
+        
+      const row = [timestamp];
+      
+      internalKeys.forEach(key => {
+        // The backend now provides unified keys (water_level, etc.)
+        const val = record[key] ?? '';
+        row.push(val);
+      });
+      
+      return row;
+    });
+
+    return [headers, ...rows].map((r) => r.join(',')).join('\n');
+  }
+
+  // 2. Summary Report (All Devices)
   const headers = ['device_id', 'device_label', 'start_date', 'end_date', 'exported_at'];
   const deviceList =
     selectedDevice === 'all'
@@ -98,7 +149,7 @@ export default function ReportsDownloader({ nodes, isLoading }: ReportsDownloade
 
   if (isLoading) return <ReportsSkeleton />;
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setError(null);
 
     if (startDate && endDate && startDate > endDate) {
@@ -108,7 +159,27 @@ export default function ReportsDownloader({ nodes, isLoading }: ReportsDownloade
 
     setDownloading(true);
     try {
-      const csv = buildCSV(nodes || [], selectedDevice, startDate, endDate);
+      let csv = '';
+      
+      // If a specific device and dates are selected, fetch real data
+      if (selectedDevice !== 'all' && startDate && endDate) {
+        // Normalize dates: start of day for startDate, end of day for endDate
+        const start = `${startDate}T00:00:00.000Z`;
+        const end = `${endDate}T23:59:59.999Z`;
+
+        console.log(`[Reports] Fetching telemetry for ${selectedDevice} from ${start} to ${end}`);
+        const response = await deviceService.getNodeGraphHybrid(selectedDevice, { startDate: start, endDate: end });
+        
+        if (response && response.data) {
+          csv = buildCSV(nodes || [], selectedDevice, startDate, endDate, response.data, response.field_mapping);
+        } else {
+          throw new Error('No data found for the selected range.');
+        }
+      } else {
+        // Fallback to summary report
+        csv = buildCSV(nodes || [], selectedDevice, startDate, endDate);
+      }
+
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -119,8 +190,8 @@ export default function ReportsDownloader({ nodes, isLoading }: ReportsDownloade
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch {
-      setError('Failed to generate report. Please try again.');
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate report. Please try again.');
     } finally {
       setDownloading(false);
     }

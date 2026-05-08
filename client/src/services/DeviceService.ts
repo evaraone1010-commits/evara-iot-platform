@@ -364,6 +364,11 @@ class NodeService {
     const response = await api.get(`/nodes/${id}/telemetry`);
     return response.data;
   }
+
+  async getNodeGraphHybrid(id: string, params?: { range?: string; startDate?: string; endDate?: string }): Promise<any> {
+    const response = await api.get(`/nodes/${id}/graph-hybrid`, { params });
+    return response.data;
+  }
 }
 
 export const deviceService = NodeService.getInstance();

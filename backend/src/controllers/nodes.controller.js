@@ -767,12 +767,27 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
             });
         }
 
-        // ✅ Process data for display
+        // ✅ Process data for display and unify field names
         const fieldMapping = metadata.sensor_field_mapping || {};
-        const graphData = resolverResult.data.map(record => ({
-            timestamp: record.timestamp instanceof Date ? record.timestamp : new Date(record.timestamp),
-            ...record
-        }));
+        const graphData = resolverResult.data.map(record => {
+            const point = {
+                timestamp: record.timestamp instanceof Date ? record.timestamp : new Date(record.timestamp),
+                ...record
+            };
+            
+            // Map raw fieldX keys to internal keys (water_level, flow_rate, etc.)
+            Object.entries(fieldMapping).forEach(([fieldKey, internalKey]) => {
+                if (record[fieldKey] !== undefined && internalKey) {
+                    point[internalKey] = record[fieldKey];
+                }
+            });
+
+            // Ensure 'value' property exists for applyLightSmoothing and calculateMetrics
+            // We prioritize water_level, then flow_rate, then field1
+            point.value = Number(point.water_level ?? point.flow_rate ?? point.tds_value ?? record.field1 ?? 0);
+            
+            return point;
+        });
 
         // ✅ Apply light smoothing
         const smoothedData = applyLightSmoothing(graphData);
@@ -784,6 +799,7 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
             source: resolverResult.source,
             dataAge: TelemetryArchiveService.getDataAgeCategory(start.getTime()),
             metrics,
+            field_mapping: fieldMapping,
             count: smoothedData.length,
             fetchedAt: new Date().toISOString(),
             cached: false
