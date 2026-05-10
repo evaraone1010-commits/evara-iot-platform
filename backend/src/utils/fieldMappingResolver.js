@@ -14,8 +14,8 @@ const INTERNAL_KEY_ALIASES = {
   water_level: ["water_level", "water_level_raw_sensor_reading", "level", "level_percentage"],
   flow_rate: ["flow_rate", "flow", "flowrate"],
   total_reading: ["total_reading", "current_reading", "meter_reading", "totalizer", "total_liters"],
-  tds_value: ["tds_value", "tds", "tds_reading"],
-  temperature: ["temperature", "temp", "temperature_field"],
+  tds_value: ["tds_value", "tds", "tds_reading", "tdsvalue"],
+  temperature: ["temperature", "temp", "temperature_field", "temperaturevalue"],
 };
 
 function normalize(v) {
@@ -118,9 +118,9 @@ module.exports = {
       }
     }
 
-    // 2. Reverse lookup: find field that maps to any target name
+    // 2. Reverse lookup: find field that maps to any target name (supporting aliases)
     for (const [field, value] of Object.entries(fieldMapping)) {
-      if (names.includes(value)) {
+      if (names.some(name => matchesInternalKey(value, name))) {
         return field;
       }
     }

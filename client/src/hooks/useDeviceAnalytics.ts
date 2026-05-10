@@ -21,6 +21,7 @@ export interface NodeInfoData {
   last_seen: string | null;
   zone_name?: string;
   community_name?: string;
+  location_name?: string;
   customer_config?: any;
   customer_name?: string | null;
 }
@@ -53,9 +54,8 @@ export interface AnalyticsData {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS = 60_000;          // Fetch from backend every 60 seconds
-const STALE_THRESHOLD_MS = 5 * 60_000;   // Data older than 5 min = device offline
+const STALE_THRESHOLD_MS = 10 * 60_000;   // Data older than 10 min = device offline
 const STALE_TIME_MS = 55_000;            // React Query cache: slightly less than poll interval
-                                          // so every poll actually hits the network
 
 export const useDeviceAnalytics = (
   hardwareIdOverride?: string,
@@ -137,8 +137,9 @@ export const useDeviceAnalytics = (
     const level = payload.level_percentage ?? payload.level ?? payload.Level ?? payload.percentage;
     const volume = payload.total_liters ?? payload.volume ?? payload.currentVolume;
     const flow = payload.flow_rate;
+    const tds = payload.tds_value ?? payload.tdsValue ?? payload.value;
 
-    return [level, volume, flow].some((v) => Number.isFinite(v));
+    return [level, volume, flow, tds].some((v) => Number.isFinite(v));
   }, []);
 
   // ── Stale / offline detection ─────────────────────────────────────────────
@@ -158,13 +159,27 @@ export const useDeviceAnalytics = (
       return { isStale: false, deviceOffline: false, lastDataTimestamp: null };
     }
 
-    const lastDataMs = new Date(bestTs).getTime();
+    // Helper to resolve timestamp to Ms, handling Firestore objects
+    const resolveMs = (ts: any): number => {
+        if (!ts) return 0;
+        if (typeof ts === 'object') {
+            if ('_seconds' in ts) return ts._seconds * 1000;
+            if ('seconds' in ts) return ts.seconds * 1000;
+        }
+        const d = new Date(ts);
+        return isNaN(d.getTime()) ? 0 : d.getTime();
+    };
+
+    const lastDataMs = resolveMs(bestTs);
+    if (lastDataMs === 0) return { isStale: false, deviceOffline: false, lastDataTimestamp: null };
+
     const ageMs = Date.now() - lastDataMs;
+    // Standardized 10-minute threshold
     const stale = ageMs > STALE_THRESHOLD_MS;
 
     return {
       isStale: stale,
-      deviceOffline: stale,           // offline = stale (no new data for > 5 min)
+      deviceOffline: stale,           
       lastDataTimestamp: bestTs,
     };
   }, [realtimeData, device, telemetryResult]);
@@ -210,10 +225,12 @@ export const useDeviceAnalytics = (
     if (!latestTelemetry) {
       if (hasUsableTelemetry(snapshot)) {
         latestTelemetry = {
-          timestamp: snapshot.timestamp,
+          timestamp: snapshot.timestamp || snapshot.created_at || snapshot.time,
           level_percentage: snapshot.level_percentage ?? snapshot.level ?? snapshot.percentage,
           total_liters: snapshot.total_liters ?? snapshot.volume ?? snapshot.currentVolume,
           flow_rate: snapshot.flow_rate,
+          tds_value: snapshot.tds_value ?? snapshot.tdsValue ?? snapshot.value ?? snapshot.v,
+          temperature: snapshot.temperature ?? snapshot.temp ?? snapshot.Temperature,
           is_corrected: snapshot.is_corrected,
           original_value: snapshot.original_value,
           confidence: snapshot.confidence,
@@ -222,10 +239,12 @@ export const useDeviceAnalytics = (
         };
       } else if (hasUsableTelemetry(latestFromAPI)) {
         latestTelemetry = {
-          timestamp: latestFromAPI.timestamp,
-          level_percentage: latestFromAPI.level,
+          timestamp: latestFromAPI.timestamp || latestFromAPI.created_at || latestFromAPI.time,
+          level_percentage: latestFromAPI.level ?? latestFromAPI.level_percentage,
           total_liters: latestFromAPI.volume ?? latestFromAPI.total_liters,
           flow_rate: latestFromAPI.flow_rate,
+          tds_value: latestFromAPI.tds_value ?? latestFromAPI.tdsValue ?? latestFromAPI.value ?? latestFromAPI.v,
+          temperature: latestFromAPI.temperature ?? latestFromAPI.temp ?? latestFromAPI.Temperature,
           is_corrected: latestFromAPI.is_corrected,
           original_value: latestFromAPI.original_value,
           confidence: latestFromAPI.confidence,
@@ -234,10 +253,12 @@ export const useDeviceAnalytics = (
         };
       } else if (hasUsableTelemetry(d.last_telemetry)) {
         latestTelemetry = {
-          timestamp: d.last_telemetry.timestamp || d.last_online_at,
+          timestamp: d.last_telemetry.timestamp || d.last_telemetry.created_at || d.last_online_at,
           level_percentage: d.last_telemetry.level_percentage ?? d.last_telemetry.Level ?? d.last_level,
           total_liters: d.last_telemetry.total_liters ?? d.last_telemetry.Volume ?? d.last_volume,
           flow_rate: d.last_telemetry.flow_rate,
+          tds_value: d.last_telemetry.tds_value ?? d.last_telemetry.tdsValue ?? d.last_telemetry.value ?? d.last_telemetry.v,
+          temperature: d.last_telemetry.temperature ?? d.last_telemetry.temp ?? d.last_telemetry.Temperature,
           is_corrected: d.last_telemetry.is_corrected,
           original_value: d.last_telemetry.original_value,
           confidence: d.last_telemetry.confidence,
@@ -273,6 +294,7 @@ export const useDeviceAnalytics = (
           last_seen: d.last_seen || null,
           zone_name: d.zone_name,
           community_name: d.community_name,
+          location_name: d.location_name,
           customer_config: d.customer_config,
           customer_name: d.customer_name || null,
         } as NodeInfoData,

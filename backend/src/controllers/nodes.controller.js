@@ -880,7 +880,22 @@ exports.getNodeAnalytics = async (req, res, next) => {
     }
 
     const response = await axios.get(thingspeakUrl);
-    const feeds = response.data.feeds || [];
+    let feeds = response.data.feeds || [];
+
+    // âœ… FIX: If no data in current window (e.g. offline > 24h), fetch the absolute last known entry
+    // This ensures we always have a "Last Seen" time and value to display.
+    if (feeds.length === 0) {
+      try {
+        const lastFeedUrl = `https://api.thingspeak.com/channels/${channelId}/feeds/last.json?api_key=${apiKey}`;
+        const lastResponse = await axios.get(lastFeedUrl);
+        if (lastResponse.data && lastResponse.data.created_at) {
+          feeds = [lastResponse.data];
+          logger.debug(`[NodesController] No data in ${range || '24H'} window, fetched last known entry from ThingSpeak for ${deviceDoc.id}`);
+        }
+      } catch (err) {
+        logger.error(`[NodesController] Failed to fetch last feed fallback for ${deviceDoc.id}:`, err.message);
+      }
+    }
 
     if (feeds.length === 0) {
       return res.status(200).json({

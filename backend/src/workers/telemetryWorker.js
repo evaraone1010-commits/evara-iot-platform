@@ -187,12 +187,12 @@ async function processDevice(device) {
         await deviceState.updateFirestoreTelemetry(device.type, device.id, telemetryData, feeds, device);
 
         // ✅ CRITICAL: Also update registry with latest last_seen so status is consistent everywhere
-        const now = new Date().toISOString();
+        const dataTs = telemetryData.lastUpdatedAt || new Date().toISOString();
         await db.collection("devices").doc(device.id).update({
-            last_seen: now,
-            last_updated_at: now,
+            last_seen: dataTs,
+            last_updated_at: dataTs,
             status: telemetryData.status,
-            updated_at: now
+            updated_at: dataTs
         }).catch(err => {
             if (err.code === 'not-found') {
                 logger.warn(`[TelemetryWorker] Registry doc not found for ${device.id}, skipping registry update`);

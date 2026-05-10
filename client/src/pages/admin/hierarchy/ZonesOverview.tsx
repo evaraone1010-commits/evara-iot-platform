@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../../context/AuthContext";
 import { adminService } from "../../../services/admin";
 import { Modal } from "../../../components/ui/Modal";
@@ -14,6 +15,7 @@ import {
   Globe,
   Edit2,
   Trash2,
+  Activity,
 } from "lucide-react";
 import { useToast } from "../../../components/ToastProvider";
 import type { Zone as RegionRow } from "../../../types/entities";
@@ -32,6 +34,7 @@ interface RegionStat {
 const RegionsOverview = () => {
   const { user, role, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [zones, setRegions] = useState<RegionRow[]>([]);
   const [stats, setStats] = useState<RegionStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,26 +44,31 @@ const RegionsOverview = () => {
   const [deletingZone, setDeletingZone] = useState<RegionRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const { showToast } = useToast();
+  const deletedZoneIds = useRef<Set<string>>(new Set());
 
   const fetchData = useCallback(async () => {
     try {
+      // Only show global loading if we have no data yet
+      if (zones.length === 0) setLoading(true);
+      
       const [regionsData, statsData] = await Promise.all([
         adminService.getRegions(),
         adminService.getRegionStats().catch(() => {
-          // Silently handle stats failure - regions can still be displayed
           return [];
         }),
       ]);
 
-      setRegions(regionsData as RegionRow[]);
+      // Safety filter: ensure recently deleted zones don't reappear if backend is slightly lagging
+      const filteredRegions = (regionsData as RegionRow[]).filter(z => !deletedZoneIds.current.has(z.id));
+      
+      setRegions(filteredRegions);
       setStats(statsData as RegionStat[]);
     } catch {
-      // Use toast for user-facing error notification
       showToast("Failed to load regions data", "error");
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, zones.length]);
 
   useEffect(() => {
     if (!authLoading) {
@@ -71,7 +79,6 @@ const RegionsOverview = () => {
   const getStatsForRegion = (regionId: string) => {
     const s = stats.find((st) => st.zone_id === regionId);
     return {
-
       customers: s?.customer_count || 0,
       devices: s?.device_count || 0,
       online: s?.online_devices || 0,
@@ -82,7 +89,10 @@ const RegionsOverview = () => {
   const handleRegionCreated = () => {
     setShowCreateModal(false);
     setEditingZone(null);
-    setLoading(true);
+    // Invalidate queries so dropdowns etc. update
+    queryClient.invalidateQueries({ queryKey: ["zones"] });
+    queryClient.invalidateQueries({ queryKey: ["zone_detailed_stats"] });
+    // Background fetch without full-page spinner
     fetchData();
   };
 
@@ -94,17 +104,43 @@ const RegionsOverview = () => {
 
   const confirmDeleteZone = async () => {
     if (!deletingZone) return;
+    
+    // Cache current state for rollback
+    const previousZones = [...zones];
+    const previousStats = [...stats];
+    const zoneIdToDelete = deletingZone.id;
+
+    // Optimistic Update: Remove from UI immediately
+    deletedZoneIds.current.add(zoneIdToDelete);
+    setRegions(zones.filter(z => z.id !== zoneIdToDelete));
+    setStats(stats.filter(s => s.zone_id !== zoneIdToDelete));
+    setShowDeleteConfirm(false);
+    
     setIsDeleting(true);
     try {
-      await adminService.deleteRegion(deletingZone.id);
+      await adminService.deleteRegion(zoneIdToDelete);
       showToast("Zone deleted successfully", "success");
-      setShowDeleteConfirm(false);
       setDeletingZone(null);
+      
+      // Clear from blacklist after 5 seconds to allow backend to stabilize
+      setTimeout(() => {
+        deletedZoneIds.current.delete(zoneIdToDelete);
+      }, 5000);
+
+      // Background refresh to ensure consistency
+      queryClient.invalidateQueries({ queryKey: ["zones"] });
+      queryClient.invalidateQueries({ queryKey: ["zone_detailed_stats"] });
       fetchData();
     } catch (err: unknown) {
+      // Rollback blacklist
+      deletedZoneIds.current.delete(zoneIdToDelete);
+      
+      // Rollback UI
+      setRegions(previousZones);
+      setStats(previousStats);
+      
       let msg = "Failed to delete zone";
       if (err && typeof err === "object" && "message" in err) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         msg = (err as any).message || msg;
       } else if (typeof err === "string") {
         msg = err;
@@ -206,26 +242,29 @@ const RegionsOverview = () => {
                 {/* Stats */}
                 <div className="apple-glass-inner p-[16px] space-y-[12px] relative z-10 mb-[20px] flex-1">
 
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="flex items-center gap-[8px] zone-stat-label font-[500]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-[8px] zone-stat-label font-[500] text-[13px]">
                       <Users size={14} className="opacity-50" /> Customers
-                    </span>
-                    <span className="font-[600] zone-stat-number">
+                    </div>
+                    <div className="font-[700] text-[15px] zone-stat-number">
                       {rs.customers}
-                    </span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="flex items-center gap-[8px] zone-stat-label font-[500]">
-                      Devices
-                    </span>
-                    <span className="font-[600] zone-stat-number flex items-center gap-[6px]">
-                      {rs.devices}
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-[8px] zone-stat-label font-[500] text-[13px]">
+                      <Activity size={14} className="opacity-50" /> Devices
+                    </div>
+                    <div className="flex items-center gap-[10px]">
                       {rs.devices > 0 && (
                         <span className="text-[10px] font-[700] text-[#1F2937] dark:text-white opacity-60 dark:opacity-80 bg-[rgba(255,255,255,0.4)] dark:bg-[rgba(255,255,255,0.1)] px-[6px] py-[2px] rounded-[4px] border border-[rgba(255,255,255,0.5)] dark:border-[rgba(255,255,255,0.2)]">
                           {rs.online}↑ {rs.offline}↓
                         </span>
                       )}
-                    </span>
+                      <div className="font-[700] text-[15px] zone-stat-number">
+                        {rs.devices}
+                      </div>
+                    </div>
                   </div>
                 </div>
 

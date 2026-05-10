@@ -703,24 +703,52 @@ const EvaraFlowAnalytics = () => {
     // This is used by the delta calculations and charts below
     const tsFeeds = useMemo(() => {
         if (!historyFeeds || historyFeeds.length === 0) return [];
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
         return historyFeeds.map((f: any) => {
-            const utcTime = new Date(f.timestamp || f.created_at).getTime();
-            const istTime = new Date(utcTime + (5.5 * 60 * 60 * 1000));
+            const utcDate = resolveDate(f.timestamp || f.created_at);
+            if (utcDate.getTime() === 0) return null;
+            const istTime = new Date(utcDate.getTime() + (5.5 * 60 * 60 * 1000));
             const reading = f.total_liters ?? (f.raw?.[fieldTotal] ? parseFloat(f.raw[fieldTotal]) : null);
             const flowReading = f.flow_rate ?? (f.raw?.[fieldFlow] ? parseFloat(f.raw[fieldFlow]) : null);
             return { ...f, istTime, reading, flowReading };
-        }).filter((f: any) => (f.reading != null && !isNaN(f.reading)) || (f.flowReading != null && !isNaN(f.flowReading)));
+        })
+        .filter((f: any) => f !== null && ((f.reading != null && !isNaN(f.reading)) || (f.flowReading != null && !isNaN(f.flowReading))))
+        .sort((a: any, b: any) => a.istTime.getTime() - b.istTime.getTime());
     }, [historyFeeds, fieldTotal, fieldFlow]);
 
     // Derived Offline Logic
     const { isTSOffline, tsIstLabel, tsDurationLabel } = useMemo(() => {
         if (!tsCreatedAt) return { isTSOffline: false, tsIstLabel: '', tsDurationLabel: '' };
 
-        const lastSeenDate = new Date(tsCreatedAt);
+        // Helper to resolve timestamp (handles Firestore objects)
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
+        const lastSeenDate = resolveDate(tsCreatedAt);
+        if (lastSeenDate.getTime() === 0) return { isTSOffline: false, tsIstLabel: '', tsDurationLabel: '' };
+
         const now = new Date();
         const diffMs = now.getTime() - lastSeenDate.getTime();
         const diffMin = diffMs / 60000;
-        const offline = diffMin > 30;
+        
+        // 10 minutes threshold for "Offline" status
+        const offline = diffMin > 10;
 
         // IST Formatting (21 Mar 2026, 14:44 IST)
         const formatOptions: Intl.DateTimeFormatOptions = {
@@ -732,13 +760,25 @@ const EvaraFlowAnalytics = () => {
             hour12: false,
             timeZone: 'Asia/Kolkata'
         };
-        const istLabel = new Intl.DateTimeFormat('en-IN', formatOptions).format(lastSeenDate).replace(',', '') + ' IST';
 
-        // Duration Formatting
+        let istLabel = '';
+        try {
+            istLabel = new Intl.DateTimeFormat('en-IN', formatOptions).format(lastSeenDate).replace(',', '') + ' IST';
+        } catch (e) {
+            istLabel = 'Unknown Date';
+        }
+
+        // Duration Formatting (Smart Logic from TDS)
         const hoursAgo = Math.floor(diffMin / 60);
-        const durationLabel = hoursAgo > 0
-            ? `Device offline · Last seen ${hoursAgo} hours ago`
-            : `Device offline · Last seen ${Math.floor(diffMin)} minutes ago`;
+        let durationLabel = '';
+        
+        if (hoursAgo >= 24) {
+            durationLabel = `Device is offline more than 24 hrs · Last seen ${istLabel}`;
+        } else if (hoursAgo > 0) {
+            durationLabel = `Device offline · Last seen ${hoursAgo} ${hoursAgo === 1 ? 'hour' : 'hours'} ago`;
+        } else {
+            durationLabel = `Device offline · Last seen ${Math.floor(diffMin)} ${Math.floor(diffMin) === 1 ? 'minute' : 'minutes'} ago`;
+        }
 
         return { isTSOffline: offline, tsIstLabel: istLabel, tsDurationLabel: durationLabel };
     }, [tsCreatedAt]);
@@ -801,22 +841,40 @@ const EvaraFlowAnalytics = () => {
 
     // Flow history (for charts)
     const flowHistory = useMemo(() => {
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
         const items = historyFeeds.map((f: any) => {
-            const d = new Date(f.timestamp || f.created_at);
+            const d = resolveDate(f.timestamp || f.created_at);
+            if (d.getTime() === 0) return null;
             const time = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-            const rawFlow = f.flow_rate ?? parseFloat(f.raw?.[fieldFlow] as string) ?? 0;
-            return { date: d, time, value: Math.max(0, rawFlow) };
-        });
-        if (telemetryData) {
+            const rawFlow = f.flow_rate ?? parseFloat(f.raw?.[fieldFlow] as string);
+            return { date: d, time, value: isNaN(rawFlow) ? 0 : Math.max(0, rawFlow) };
+        }).filter((item: any) => item !== null);
+
+        // Sort by date to prevent "straight line" backtracking artifacts
+        items.sort((a: any, b: any) => a.date.getTime() - b.date.getTime());
+
+        if (telemetryData && !effectiveIsOffline) {
             const now = new Date();
-            items.push({
-                date: now,
-                time: `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`,
-                value: Math.max(0, flowRate)
-            });
+            // Only append if 'now' is actually after the last history point
+            if (items.length === 0 || now.getTime() > items[items.length - 1].date.getTime()) {
+                items.push({
+                    date: now,
+                    time: `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`,
+                    value: Math.max(0, flowRate)
+                });
+            }
         }
         return items;
-    }, [historyFeeds, fieldFlow, telemetryData, flowRate]);
+    }, [historyFeeds, fieldFlow, telemetryData, flowRate, effectiveIsOffline]);
 
     // ── Delta Water Reading calculations ──────────────────────────────────────
     const meterHistory = useMemo(() => {

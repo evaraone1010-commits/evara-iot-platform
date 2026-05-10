@@ -99,6 +99,19 @@ export const useFirestoreFlowData = (
                 const docData = snapshot.data();
                 console.log('[FirestoreFlow] Snapshot received:', docData);
 
+                // Helper to convert Firestore Timestamp objects to ISO string
+                const safeTimestamp = (ts: any): string | null => {
+                    if (!ts) return null;
+                    if (typeof ts === 'object') {
+                        if ('_seconds' in ts) return new Date(ts._seconds * 1000).toISOString();
+                        if ('seconds' in ts) return new Date(ts.seconds * 1000).toISOString();
+                        if (ts instanceof Date) return ts.toISOString();
+                    }
+                    if (typeof ts === 'string') return ts;
+                    if (typeof ts === 'number') return new Date(ts < 10000000000 ? ts * 1000 : ts).toISOString();
+                    return null;
+                };
+
                 // Extract flow data from multiple possible locations in the document
                 // Priority: telemetry_snapshot > top-level fields > raw_data
                 const telemetrySnapshot = docData.telemetry_snapshot || {};
@@ -106,35 +119,31 @@ export const useFirestoreFlowData = (
 
                 // Volume / total_liters extraction
                 let volume: number | null = null;
-                if (docData.total_liters != null && !isNaN(parseFloat(docData.total_liters))) {
-                    volume = parseFloat(docData.total_liters);
-                } else if (telemetrySnapshot.total_liters != null && !isNaN(parseFloat(telemetrySnapshot.total_liters))) {
-                    volume = parseFloat(telemetrySnapshot.total_liters);
-                } else if (docData.volume != null && !isNaN(parseFloat(docData.volume))) {
-                    volume = parseFloat(docData.volume);
-                } else if (rawData.field1 && !isNaN(parseFloat(rawData.field1))) {
-                    volume = parseFloat(rawData.field1);
-                }
+                const parseVal = (v: any) => {
+                    if (v == null) return null;
+                    const parsed = parseFloat(v);
+                    return isNaN(parsed) ? null : parsed;
+                };
+
+                volume = parseVal(docData.total_liters) 
+                         ?? parseVal(telemetrySnapshot.total_liters) 
+                         ?? parseVal(docData.volume) 
+                         ?? parseVal(rawData.field1);
 
                 // Flow rate extraction
-                let flowRate: number | null = null;
-                if (docData.flow_rate != null && !isNaN(parseFloat(docData.flow_rate))) {
-                    flowRate = parseFloat(docData.flow_rate);
-                } else if (telemetrySnapshot.flow_rate != null && !isNaN(parseFloat(telemetrySnapshot.flow_rate))) {
-                    flowRate = parseFloat(telemetrySnapshot.flow_rate);
-                } else if (rawData.field3 && !isNaN(parseFloat(rawData.field3))) {
-                    flowRate = parseFloat(rawData.field3);
-                }
+                let flowRate = parseVal(docData.flow_rate)
+                               ?? parseVal(telemetrySnapshot.flow_rate)
+                               ?? parseVal(rawData.field3);
 
                 // Timestamp extraction
-                const timestamp = 
+                const timestamp = safeTimestamp(
                     docData.timestamp ||
                     docData.lastUpdatedAt || 
                     telemetrySnapshot.timestamp || 
                     docData.last_updated_at || 
                     docData.last_seen ||
-                    rawData.created_at || 
-                    null;
+                    rawData.created_at
+                );
 
                 // Status extraction
                 const status = docData.status || telemetrySnapshot.status || null;

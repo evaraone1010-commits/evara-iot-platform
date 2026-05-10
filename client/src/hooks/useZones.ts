@@ -32,7 +32,8 @@ export const useZones = () => {
         throw error;
       }
     },
-    staleTime: 1000 * 60 * 10,
+    staleTime: 0, // Always fetch fresh data for administrative lists
+    gcTime: 1000 * 60 * 5, // Keep in memory for 5 mins
     retry: 2,
   });
 

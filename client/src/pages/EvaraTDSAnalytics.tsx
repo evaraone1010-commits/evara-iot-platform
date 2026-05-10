@@ -122,7 +122,7 @@ const QUALITY_CONFIG = {
 };
 
 const EvaraTDSAnalytics = () => {
-    const { id } = useParams<{ id: string }>();
+    const { hardwareId } = useParams<{ hardwareId: string }>();
     const navigate = useNavigate();
     const [chartRange, setChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H');
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -139,7 +139,7 @@ const EvaraTDSAnalytics = () => {
         isLoading,
         isError,
         refetch,
-    } = useDeviceAnalytics(id, { refetchInterval: 30000, filter: { range: chartRange } });
+    } = useDeviceAnalytics(hardwareId, { refetchInterval: 30000, filter: { range: chartRange } });
 
     const deviceData = device as TdsDeviceRecord | null | undefined;
 
@@ -150,10 +150,10 @@ const EvaraTDSAnalytics = () => {
     };
 
     const handleDelete = async () => {
-        if (!id) return;
+        if (!hardwareId) return;
         setIsDeleting(true);
         try {
-            await api.delete(`/admin/nodes/${id}`);
+            await api.delete(`/admin/nodes/${hardwareId}`);
             navigate('/nodes');
         } catch (err) {
             console.error("Failed to delete node:", err);
@@ -203,23 +203,72 @@ const EvaraTDSAnalytics = () => {
         return { chartData, chartTicks };
     }, [history, unifiedData?.history, chartRange]);
 
-    const formatTimeAgo = (iso?: TimestampLike) => {
-        const normalized = resolveTimestampValue(iso);
-        if (!normalized) return 'unknown';
-        const ts = new Date(normalized);
-        if (isNaN(ts.getTime())) return 'unknown';
-        return ts.toLocaleString();
-    };
+    const { tsIstLabel, tsDurationLabel } = useMemo(() => {
+        const lastSeenRaw = unifiedData?.info?.data?.last_seen || deviceData?.last_telemetry?.timestamp || deviceData?.last_telemetry?.created_at || deviceData?.last_seen || deviceData?.last_seen_at || deviceData?.lastOnline || null;
+        
+        // Helper to resolve timestamp (handles Firestore objects)
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
+        const lastSeenDate = resolveDate(lastSeenRaw);
+        const now = new Date();
+        const diffMs = now.getTime() - lastSeenDate.getTime();
+        const diffMin = diffMs / 60000;
+
+        // Unified 10-minute threshold
+        const isOffline = diffMin > 10;
+
+        if (lastSeenDate.getTime() === 0) {
+            return { 
+                tsIstLabel: '', 
+                tsDurationLabel: isOffline ? 'Device offline - Never seen online' : '' 
+            };
+        }
+
+        // IST Formatting (21 Mar 2026, 14:44 IST)
+        const formatOptions: Intl.DateTimeFormatOptions = {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+            timeZone: 'Asia/Kolkata'
+        };
+        const istLabel = new Intl.DateTimeFormat('en-IN', formatOptions).format(lastSeenDate).replace(',', '') + ' IST';
+
+        // Duration Formatting
+        const hoursAgo = Math.floor(diffMin / 60);
+        let durationLabel = '';
+        if (hoursAgo >= 24) {
+            durationLabel = `Device is offline more than 24 hrs - Last seen ${istLabel}`;
+        } else if (hoursAgo > 0) {
+            durationLabel = `Device is offline - Last seen ${hoursAgo} ${hoursAgo === 1 ? 'hour' : 'hours'} ago`;
+        } else if (diffMin > 0) {
+            durationLabel = `Device is offline - Last seen ${Math.floor(diffMin)} ${Math.floor(diffMin) === 1 ? 'minute' : 'minutes'} ago`;
+        } else {
+            durationLabel = `Device is offline - Never seen online`;
+        }
+
+        return { tsIstLabel: istLabel, tsDurationLabel: durationLabel };
+    }, [unifiedData, deviceData]);
 
     const lastSeenRaw = unifiedData?.info?.data?.last_seen || deviceData?.last_telemetry?.timestamp || deviceData?.last_telemetry?.created_at || deviceData?.last_seen || deviceData?.last_seen_at || deviceData?.lastOnline || null;
     const isOffline = computeTdsDeviceStatus(lastSeenRaw) !== 'Online';
 
     // Current values (unified from telemetry if available)
-    const currentTds = unifiedData?.latest?.data?.value ?? deviceData?.tdsValue ?? deviceData?.last_telemetry?.tdsValue ?? deviceData?.last_telemetry?.tds_value ?? 0;
-    const currentTemp = unifiedData?.latest?.data?.temperature ?? deviceData?.temperature ?? deviceData?.last_telemetry?.temperature ?? 0;
+    const currentTds = unifiedData?.latest?.tds_value ?? deviceData?.tdsValue ?? deviceData?.last_telemetry?.tdsValue ?? deviceData?.last_telemetry?.tds_value ?? 0;
+    const currentTemp = unifiedData?.latest?.temperature ?? deviceData?.temperature ?? deviceData?.last_telemetry?.temperature ?? 0;
     const alertsCount = deviceData?.alertsCount || 0;
 
-    if (!id) return <Navigate to="/nodes" replace />;
+    if (!hardwareId) return <Navigate to="/nodes" replace />;
 
     if (isLoading || !device) {
         if (isError || (!isLoading && !device)) {
@@ -231,15 +280,10 @@ const EvaraTDSAnalytics = () => {
                         <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
                             <Droplets className="text-red-500" size={40} />
                         </div>
-                        <h2 className="text-2xl font-black mb-3" style={{ color: 'var(--text-primary)' }}>Device Offline</h2>
+                        <h2 className="text-2xl font-black mb-3" style={{ color: 'var(--text-primary)' }}>Device Error</h2>
                         <p className="mb-3 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                            This EvaraTDS unit is currently unresponsive or could not be found in our network.
+                            We encountered an error loading the device profile or it does not exist.
                         </p>
-                        {lastSeenRaw && (
-                            <p className="mb-6 text-sm font-bold" style={{ color: '#FF3B30' }}>
-                                Last seen {formatTimeAgo(lastSeenRaw)}
-                            </p>
-                        )}
                         <button
                             onClick={() => navigate('/nodes')}
                             className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold transition-all active:scale-95"
@@ -265,34 +309,6 @@ const EvaraTDSAnalytics = () => {
         );
     }
 
-    if (isOffline) {
-        return (
-            <div className="min-h-screen flex items-center justify-center p-6 bg-transparent">
-                <div className="p-10 rounded-[2rem] w-full max-w-sm text-center shadow-2xl relative overflow-hidden"
-                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--card-border)' }}>
-                    <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
-                        <Droplets className="text-red-500" size={40} />
-                    </div>
-                    <h2 className="text-2xl font-black mb-3" style={{ color: 'var(--text-primary)' }}>Device Offline</h2>
-                    <p className="mb-3 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                        This EvaraTDS unit is currently unresponsive or could not be found in our network.
-                    </p>
-                    {lastSeenRaw && (
-                        <p className="mb-6 text-sm font-bold" style={{ color: '#FF3B30' }}>
-                            Last seen {formatTimeAgo(lastSeenRaw)}
-                        </p>
-                    )}
-                    <button
-                        onClick={() => navigate('/nodes')}
-                        className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold transition-all active:scale-95"
-                    >
-                        Back to Stations
-</button>
-                </div>
-            </div>
-        );
-    }
-
     return (
 <div className="min-h-screen font-sans relative overflow-x-hidden bg-transparent"
             style={{ color: 'var(--text-primary)' }}>
@@ -300,7 +316,7 @@ const EvaraTDSAnalytics = () => {
             <main className="relative flex-grow px-4 sm:px-6 lg:px-8 pt-[110px] lg:pt-[120px] pb-8" style={{ zIndex: 1 }}>
                 <div className="max-w-[1400px] mx-auto flex flex-col gap-4">
 
-                    {/* ── Row 0: Breadcrumb + Heading + Action Buttons ── */}
+                    {/* -- Row 0: Breadcrumb + Heading + Action Buttons -- */}
                     <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-2">
 
                         {/* Left: breadcrumb + title */}
@@ -325,6 +341,11 @@ const EvaraTDSAnalytics = () => {
                             <h2 style={{ fontSize: '22px', fontWeight: '700', marginTop: '6px', color: 'var(--text-primary)' }}>
                                 {deviceName} Analytics
                             </h2>
+                            {isOffline && tsDurationLabel && (
+                                <p className="text-sm font-bold text-red-500 m-0 animate-in fade-in slide-in-from-top-1 duration-500">
+                                    {tsDurationLabel}
+                                </p>
+                            )}
                         </div>
 
                         {/* Right: action-button pills */}
@@ -333,7 +354,7 @@ const EvaraTDSAnalytics = () => {
                             {/* Offline / Online pill */}
                             <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider shadow-sm border-none text-white ${isOffline ? 'bg-[#FF3B30]' : 'bg-[#34C759]'}`}>
                                 <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                                {isOffline ? 'Offline' : 'Online'}
+                                {isOffline ? 'Offline' : 'Live'}
                             </div>
 
                             {/* Refresh */}
@@ -452,7 +473,7 @@ const EvaraTDSAnalytics = () => {
 
                                     <div className="rounded-xl p-4" style={{ background: "var(--card-bg)", border: '1px solid var(--card-border)', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
                                         <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Hardware ID</p>
-                                        <p className="text-sm font-bold mt-1" style={{ color: "var(--text-primary)" }}>{id}</p>
+                                        <p className="text-sm font-bold mt-1" style={{ color: "var(--text-primary)" }}>{hardwareId}</p>
                                     </div>
 
                                     <div className="rounded-xl p-4" style={{ background: "var(--card-bg)", border: '1px solid var(--card-border)', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
@@ -484,7 +505,7 @@ const EvaraTDSAnalytics = () => {
                                             fontSize: '14px'
                                         }}
                                         onClick={() => {
-                                            const info = `Device Name: ${deviceName}\nHardware ID: ${id}\nDevice Type: TDS Water Quality Monitor\nLocation: ${deviceData?.location_name || 'Not specified'}\nSubscription: PRO\nAssigned To: ${deviceData?.customer_name || 'Unassigned'}`;
+                                            const info = `Device Name: ${deviceName}\nHardware ID: ${hardwareId}\nDevice Type: TDS Water Quality Monitor\nLocation: ${deviceData?.location_name || 'Not specified'}\nSubscription: PRO\nAssigned To: ${deviceData?.customer_name || 'Unassigned'}`;
                                             navigator.clipboard.writeText(info);
                                             alert('Node information copied to clipboard!');
                                         }}
@@ -547,7 +568,7 @@ const EvaraTDSAnalytics = () => {
 
                                     <div className="rounded-xl p-4" style={{ background: "var(--card-bg)", border: '1px solid var(--card-border)' }}>
                                         <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>Temperature</p>
-                                        <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>{deviceData?.temperature || 'N/A'} °C</p>
+                                        <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>{deviceData?.temperature || 'N/A'} -C</p>
                                     </div>
                                 </div>
 
@@ -567,7 +588,7 @@ const EvaraTDSAnalytics = () => {
                         </div>
                     )}
 
-                    {/* ── Main Layout: Device Card (left ~30%) + [Stat Cards + Chart] (right ~70%) ── */}
+                    {/* -- Main Layout: Device Card (left ~30%) + [Stat Cards + Chart] (right ~70%) -- */}
                     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,2.8fr)] gap-4 items-stretch">
 
                         {/* Device / Probe Card */}
@@ -577,10 +598,6 @@ const EvaraTDSAnalytics = () => {
                             {/* Card header */}
                             <div className="flex items-center justify-between">
                                 <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{deviceName}</span>
-                                <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/10">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                                    <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Live</span>
-                                </div>
                             </div>
 
                             {/* Meter visual */}
@@ -599,7 +616,7 @@ const EvaraTDSAnalytics = () => {
                                 </div>
                                 <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/10">
                                     <p className="text-[10px] font-black uppercase tracking-widest text-orange-500/80 mb-1">Temperature</p>
-                                    <p className="text-lg font-black text-orange-500">{currentTemp || 0}°C</p>
+                                    <p className="text-lg font-black text-orange-500">{currentTemp || 0}-C</p>
                                 </div>
                             </div>
                         </div>
@@ -620,7 +637,7 @@ const EvaraTDSAnalytics = () => {
                                 title="Thermal Sense"
                                 label="Temperature"
                                 value={currentTemp || 0}
-                                unit="°C"
+                                unit="-C"
                                 icon={Thermometer}
                                 accentColor="#f97316"
                                 iconBg="rgba(249,115,22,0.1)"
@@ -643,7 +660,7 @@ const EvaraTDSAnalytics = () => {
                             />
                         </div>
 
-                            {/* Chart Card — fills remaining height of right column */}
+                            {/* Chart Card - fills remaining height of right column */}
                             <div className="flex-1 rounded-2xl p-6 flex flex-col"
                                 style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', boxShadow: '0 4px 12px rgba(0,0,0,0.06)' }}>
 
@@ -729,7 +746,7 @@ const EvaraTDSAnalytics = () => {
     );
 };
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// --- Sub-components -----------------------------------------------------------
 
 const MiniStatCard = ({ title, label, value, unit, icon: Icon, accentColor, iconBg }: MiniStatCardProps) => (
     <div className="rounded-2xl p-5 flex flex-col gap-3 relative overflow-hidden group hover:scale-[1.015] transition-all duration-300"

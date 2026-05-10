@@ -4,6 +4,7 @@ import { MapPin } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { computeTdsDeviceStatus, normalizeStatus } from '../../utils/tdsStatus';
+import { getDeviceAnalyticsRoute } from '../../utils/deviceRouting';
 
 type TdsTelemetry = {
     timestamp?: string | null;
@@ -66,7 +67,7 @@ const TDSCard = ({ node, realtimeStatus }: TDSCardProps) => {
     });
 return (
         <Link
-            to={`/evaratds/${node.hardwareId || node.id}`}
+            to={getDeviceAnalyticsRoute(node as any)}
             className={clsx(
                 "group rounded-[24px] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden flex flex-col relative mx-auto w-full min-w-0 border apple-glass-card",
 isOnline ? "bg-white/40 dark:bg-white/5 border-white/20" : "bg-slate-500/5 border-slate-500/10"

@@ -51,6 +51,7 @@ const AdminNodes = () => {
     "GovtBorewell",
     "PumpHouse",
     "FlowMeter",
+    "EvaraTDS",
   ];
 
   // Fetch Metadata (Zones/Comms/Custs) once
@@ -126,6 +127,8 @@ const AdminNodes = () => {
       assetType = "EvaraDeep";
     if (formData.category === "PumpHouse" || formData.category === "FlowMeter")
       assetType = "EvaraFlow";
+    if (formData.category === "EvaraTDS")
+      assetType = "EvaraTDS";
 
     try {
       const nodeData = {

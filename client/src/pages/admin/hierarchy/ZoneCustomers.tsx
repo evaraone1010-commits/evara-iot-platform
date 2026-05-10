@@ -261,23 +261,23 @@ const RegionCustomers = () => {
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         {user?.role === "superadmin" && (
-                          <div className="flex items-center gap-1 mr-2 invisible group-hover:visible">
+                          <div className="flex items-center gap-2 mr-2">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setEditingCustomer(customer);
                               }}
-                              className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors"
+                              className="flex items-center gap-1.5 text-[11px] font-[600] text-blue-600 border border-blue-200 bg-blue-50 px-2.5 py-1.5 rounded-[8px] hover:bg-blue-100 transition-all shadow-sm"
                             >
-                              <Edit2 size={14} />
+                              <Edit2 size={13} /> Edit
                             </button>
                             <button
                               onClick={(e) =>
                                 handleDeleteCustomer(e, customer.id)
                               }
-                              className="p-1.5 hover:bg-red-50 rounded-lg text-red-600 transition-colors"
+                              className="flex items-center gap-1.5 text-[11px] font-[600] text-red-600 border border-red-200 bg-red-50 px-2.5 py-1.5 rounded-[8px] hover:bg-red-100 transition-all shadow-sm"
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={13} /> Delete
                             </button>
                           </div>
                         )}
