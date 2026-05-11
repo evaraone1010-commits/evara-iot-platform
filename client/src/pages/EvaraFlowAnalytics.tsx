@@ -207,8 +207,6 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
         return [];
     }, [history, period, rangeStart, rangeEnd]);
 
-    const activeLabel = chartData[Math.floor(chartData.length / 2)]?.label || '--:--';
-
     const peakUsage = useMemo(() => {
         if (chartData.length === 0) return 0;
         return Math.max(...chartData.map(d => d.current || 0));
