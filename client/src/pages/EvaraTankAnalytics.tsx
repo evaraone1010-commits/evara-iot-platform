@@ -10,7 +10,6 @@ import {
     Info, Bell, Settings, Wifi
 } from 'lucide-react';
 import api from '../services/api';
-import { useStaleDataAge } from '../hooks/useStaleDataAge';
 import { computeOnlineStatus } from '../utils/telemetryPipeline';
 import { useDeviceAnalytics, type NodeInfoData } from '../hooks/useDeviceAnalytics';
 import { useRealtimeTelemetry } from '../hooks/useRealtimeTelemetry';
@@ -112,16 +111,12 @@ const EvaraTankAnalytics = () => {
     const queryClient = useQueryClient();
 
     const [tankChartRange, setTankChartRange] = useState<'24H' | '1W' | '1M' | 'RANGE'>('24H');
-    const [rangeStart, setRangeStart] = useState<string>('');
-    const [rangeEnd, setRangeEnd] = useState<string>('');
 
     const [localCfg, setLocalCfg] = useState<LocalTankConfig>(DEFAULT_LOCAL_CFG);
     const [cfgDirty, setCfgDirty] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [saveError, setSaveError] = useState<string | null>(null);
     const [showParams, setShowParams] = useState(false);
     const [showNodeInfo, setShowNodeInfo] = useState(false);
-    const [activeInfoPopup, setActiveInfoPopup] = useState<'fillRate' | 'consumption' | 'alerts' | 'deviceHealth' | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -134,9 +129,7 @@ const EvaraTankAnalytics = () => {
         refetch,
     } = useDeviceAnalytics(hardwareId, {
         filter: {
-            range: tankChartRange === 'RANGE' ? undefined : tankChartRange,
-            startDate: tankChartRange === 'RANGE' ? rangeStart : undefined,
-            endDate: tankChartRange === 'RANGE' ? rangeEnd : undefined
+            range: tankChartRange === 'RANGE' ? undefined : tankChartRange
         }
     });
 
@@ -171,8 +164,6 @@ const EvaraTankAnalytics = () => {
 
     const { telemetry: realtimeData } = useRealtimeTelemetry(deviceInfo?.id || hardwareId || "");
     const [liveFeeds, setLiveFeeds] = useState<TelemetryPayload[]>([]);
-    const [showTankLevel, setShowTankLevel] = useState(true);
-    const [showVolume, setShowVolume] = useState(true);
 
     useEffect(() => {
         const history = (unifiedData?.history as { feeds?: TelemetryPayload[] })?.feeds || [];
@@ -352,7 +343,6 @@ const EvaraTankAnalytics = () => {
         const ticks = [];
         const startMs = filteredChartData[0]._ms;
         const endMs = filteredChartData[filteredChartData.length - 1]._ms;
-        const totalDuration = endMs - startMs;
 
         if (tankChartRange === '24H') {
             const interval = 30 * 60_000;
@@ -398,7 +388,7 @@ const EvaraTankAnalytics = () => {
             await api.put(`/admin/nodes/${hardwareId}`, localToApiBody(localCfg));
             await queryClient.invalidateQueries({ queryKey: ['device_config', hardwareId] });
             setCfgDirty(false); setShowParams(false);
-        } catch (err: any) { setSaveError(err.message || 'Failed to save'); }
+        } catch (err: any) { console.error('Save failed:', err); }
         finally { setSaving(false); }
     }, [hardwareId, localCfg, queryClient]);
 
@@ -410,7 +400,6 @@ const EvaraTankAnalytics = () => {
     const smoothedLatestPoint = chartData[chartData.length - 1];
     const pct = smoothedLatestPoint?.level ?? metrics.percentage ?? 0;
     const deviceName = deviceInfo?.name || 'Tank';
-    const volDivisor = Math.max(...filteredChartData.map((d: any) => d.volume), 1) >= 1000 ? 1000 : 1;
 
     return (
         <div className="min-h-screen font-sans relative overflow-x-hidden bg-transparent" style={{ color: 'var(--text-primary)' }}>
@@ -596,8 +585,8 @@ const EvaraTankAnalytics = () => {
                                                     </div>
                                                 );
                                             }} />
-                                            {showTankLevel && <Area yAxisId="left" type="monotone" name="Level %" dataKey="level" stroke="#0A84FF" fill="#0A84FF20" strokeWidth={2} dot={false} connectNulls={false} />}
-                                            {showVolume && <Area yAxisId="right" type="monotone" name="Volume" dataKey="volume" stroke="#FF9500" fill="#FF950020" strokeWidth={2} dot={false} connectNulls={false} />}
+                                            <Area yAxisId="left" type="monotone" name="Level %" dataKey="level" stroke="#0A84FF" fill="#0A84FF20" strokeWidth={2} dot={false} connectNulls={false} />
+                                            <Area yAxisId="right" type="monotone" name="Volume" dataKey="volume" stroke="#FF9500" fill="#FF950020" strokeWidth={2} dot={false} connectNulls={false} />
                                         </AreaChart>
                                     </ResponsiveContainer>
                                 </div>

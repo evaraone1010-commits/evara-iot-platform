@@ -214,15 +214,6 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
         return Math.max(...chartData.map(d => d.current || 0));
     }, [chartData]);
 
-    const CustomXAxisTick = ({ x, y, payload }: any) => {
-        const isActive = payload.value === activeLabel;
-        return (
-            <text x={x} y={y + 15} textAnchor="middle" fill={isActive ? 'var(--text-primary)' : 'var(--text-muted)'} fontSize={11} fontWeight={600}>
-                {payload.value}
-            </text>
-        );
-    };
-
     const CustomYAxisTick = ({ x, y, payload }: any) => {
         return (
             <text x={x} y={y} dy={4} textAnchor="start" fill="var(--text-muted)" fontSize={10} fontWeight={500}>
@@ -892,10 +883,10 @@ const EvaraFlowAnalytics = () => {
             .filter((e: { ts: number; reading: number }) => !isNaN(e.reading));
     }, [historyFeeds, fieldTotal]);
 
-    const { deltaVolumeLitres, avgFlowLperMin } = useMemo(() => {
+    const { deltaVolumeLitres } = useMemo(() => {
         // Safety: If still loading initial history, return null to show "Fetching" state in UI
         if (analyticsLoading && meterHistory.length === 0) {
-            return { deltaVolumeLitres: null, avgFlowLperMin: null };
+            return { deltaVolumeLitres: null };
         }
 
         if (effectiveIsOffline) {
@@ -908,18 +899,15 @@ const EvaraFlowAnalytics = () => {
                 const deltaMin = deltaMs / 60000;
 
                 // Guards
-                if (deltaVol < 0) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-                if (deltaVol > 10000) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-                if (deltaMin <= 0) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-
-                const flowMin = deltaVol / deltaMin;
+                if (deltaVol < 0) return { deltaVolumeLitres: NaN };
+                if (deltaVol > 10000) return { deltaVolumeLitres: NaN };
+                if (deltaMin <= 0) return { deltaVolumeLitres: NaN };
 
                 return {
                     deltaVolumeLitres: deltaVol,
-                    avgFlowLperMin: flowMin,
                 };
             }
-            return { deltaVolumeLitres: 0, avgFlowLperMin: flowRate };
+            return { deltaVolumeLitres: 0 };
         }
 
         // Live Mode
@@ -931,16 +919,15 @@ const EvaraFlowAnalytics = () => {
             const deltaMin = deltaMs / 60_000;
 
             if (deltaVol < 0 || deltaVol > 10000 || deltaMin <= 0) {
-                return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate, deltaStatusMsg: '—' };
+                return { deltaVolumeLitres: NaN, deltaStatusMsg: '-' };
             }
 
             return {
                 deltaVolumeLitres: deltaVol,
-                avgFlowLperMin: deltaMin > 0 ? deltaVol / deltaMin : flowRate,
                 deltaStatusMsg: null as string | null
             };
         }
-        return { deltaVolumeLitres: 0, avgFlowLperMin: flowRate, deltaStatusMsg: 'Insufficient history' as string | null };
+        return { deltaVolumeLitres: 0, deltaStatusMsg: 'Insufficient history' as string | null };
     }, [tsFeeds, meterHistory, flowRate, effectiveIsOffline]);
 
     // ── Usage Forecast Logic (24h Pattern) ──────────────────────────────────
