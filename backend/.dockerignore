@@ -37,6 +37,8 @@ simulate_*.js
 repair_*.js
 provision_*.js
 get_test_token.js
+scripts/
+
 
 # IDE / OS noise
 .DS_Store

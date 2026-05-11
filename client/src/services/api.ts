@@ -16,14 +16,60 @@ logger.log('[API Config] VITE_API_URL:', VITE_API_URL);
 logger.log('[API Config] SOCKET_URL:', SOCKET_URL);
 logger.log('[API Config] DEV mode:', import.meta.env.DEV);
 
+// Token cache — refresh only when it's about to expire
+let cachedToken: string | null = null;
+let tokenExpiresAt: number = 0;
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+
+/**
+ * Smart token retriever:
+ * 1. Returns cached token if valid and far from expiry
+ * 2. Uses getIdToken(false) to let Firebase handle internal caching
+ * 3. Decodes JWT to track expiry locally
+ */
+async function getSmartToken(): Promise<string | null> {
+  const now = Date.now();
+
+  // Return cached token if still valid (with buffer)
+  if (cachedToken && now < tokenExpiresAt - TOKEN_REFRESH_BUFFER_MS) {
+    return cachedToken;
+  }
+
+  const user = auth.currentUser;
+  if (!user) return null;
+
+  try {
+    // getIdToken(false) uses Firebase's internal cache if possible
+    const token = await user.getIdToken(false);
+    
+    // Simple JWT decode to find 'exp' field
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    
+    cachedToken = token;
+    tokenExpiresAt = payload.exp * 1000; // convert to ms
+    
+    return cachedToken;
+  } catch (err) {
+    logger.error('[API] Failed to refresh token:', err);
+    return null;
+  }
+}
+
+/**
+ * Clear the token cache (e.g. on logout)
+ */
+export function clearTokenCache() {
+  cachedToken = null;
+  tokenExpiresAt = 0;
+}
+
 export const socket = io(SOCKET_URL, {
   autoConnect: false, // Prevents 400 Bad Request on page load before auth is ready
   auth: async (cb) => {
-    const user = auth.currentUser;
-    if (user) {
-      const token = await user.getIdToken();
-      cb({ token });
-    } else {
+    try {
+      const token = await getSmartToken();
+      cb({ token: token || undefined });
+    } catch (err) {
       cb({});
     }
   }
@@ -42,22 +88,16 @@ const api = axios.create({
 api.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
-      // Get Firebase user with timeout protection
-      const user = auth.currentUser;
+      const token = await getSmartToken();
       
-      if (!user) {
-        logger.warn('[API Interceptor] No user logged in, skipping token injection');
-        return config;
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+        logger.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
+      } else {
+        logger.warn('[API Interceptor] No token available, skipping injection');
       }
-
-      // Get fresh ID token
-      const token = await user.getIdToken(true); // Force refresh
-      config.headers.Authorization = `Bearer ${token}`;
-      
-      logger.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
     } catch (error) {
       logger.error("[API Interceptor] Failed to get token:", error);
-      // Don't throw - let request proceed (will fail with 401, which is correct)
     }
     return config;
   }

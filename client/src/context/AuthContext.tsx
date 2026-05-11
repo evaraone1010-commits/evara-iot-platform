@@ -347,6 +347,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const logout = useCallback(async (): Promise<void> => {
+    try {
+      // ✅ AUDIT FIX: Clear smart token cache on logout
+      const { clearTokenCache } = await import("../services/api");
+      clearTokenCache();
+    } catch (err) {
+      logger.error("[AuthContext] Failed to clear token cache:", err);
+    }
+
     await signOut(auth);
     setUser(null);
   }, []);
