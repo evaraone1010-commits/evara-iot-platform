@@ -211,7 +211,7 @@ async function processDevice(device) {
             level_percentage: telemetryData.percentage, // Include for consistency
             volume: telemetryData.volume,
             flow_rate: telemetryData.flow_rate,
-            total_reading: telemetryData.total_reading,
+            total_liters: telemetryData.total_liters,
             tds_value: telemetryData.tds_value,
             temperature: telemetryData.temperature,
             water_quality: telemetryData.water_quality,

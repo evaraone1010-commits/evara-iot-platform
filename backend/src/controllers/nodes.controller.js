@@ -846,66 +846,33 @@ exports.getNodeAnalytics = async (req, res, next) => {
       Object.keys(fieldMapping).find(k => fieldMapping[k] && fieldMapping[k].includes("water_level")) ||
       (sampleFeed.field1 !== undefined ? "field1" : "field2");
 
-    // â”€â”€ FLOW METER path (unchanged) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── FLOW METER path (Centralized via deviceStateService) ─────────────────
     if (["evaraflow", "flow", "flow_meter"].includes(type)) {
-      const flowKeys = ['flowField', 'flow_rate', 'flow_rate_field'];
-      const totalKeys = ['volumeField', 'current_reading', 'total_reading', 'meter_reading_field'];
-
-      let flowRateFieldKey =
-        deviceDoc.data().flow_rate_field ||
-        Object.keys(fieldMapping).find(k => flowKeys.includes(fieldMapping[k])) ||
-        "field4";
-
-      let totalReadingFieldKey =
-        deviceDoc.data().meter_reading_field ||
-        Object.keys(fieldMapping).find(k => totalKeys.includes(fieldMapping[k])) ||
-        "field5";
-
       if (feeds.length > 0) {
-        const latestFeed = getLatestFeed(feeds);
-        if (!totalReadingFieldKey || !latestFeed[totalReadingFieldKey]) {
-          let maxVal = -1;
-          for (let i = 1; i <= 8; i++) {
-            const val = parseFloat(latestFeed[`field${i}`]);
-            if (!isNaN(val) && val > maxVal) {
-              maxVal = val;
-              totalReadingFieldKey = `field${i}`;
-            }
-          }
-        }
-        if (!flowRateFieldKey || !latestFeed[flowRateFieldKey]) {
-          for (const f of ["field3", "field4", "field1", "field2"]) {
-            const val = parseFloat(latestFeed[f]);
-            if (!isNaN(val) && val > 0 && val < 1000 && f !== totalReadingFieldKey) {
-              flowRateFieldKey = f;
-              break;
-            }
-          }
-        }
-        if (!flowRateFieldKey) flowRateFieldKey = "field4";
-        if (!totalReadingFieldKey) totalReadingFieldKey = "field5";
+        // Use centralized processing logic for consistency
+        const processed = await deviceState.processThingSpeakData(metadata, feeds);
+        if (!processed) return res.status(404).json({ error: "Processing failed" });
 
-        const lastUpdatedAt = latestFeed.created_at;
-        const status = deviceState.calculateDeviceStatus(lastUpdatedAt);
-
+        const { flowField, totalField } = processed._debugFields || {};
+        
         const flowResult = {
           node_id: req.params.id,
-          status,
-          lastUpdatedAt,
-          active_fields: { flow_rate: flowRateFieldKey, total_liters: totalReadingFieldKey },
-          flow_rate: parseFloat(latestFeed[flowRateFieldKey]) || 0,
-          total_liters: parseFloat(latestFeed[totalReadingFieldKey]) || 0,
+          status: processed.status,
+          lastUpdatedAt: processed.lastUpdatedAt,
+          active_fields: { flow_rate: flowField, total_liters: totalField },
+          flow_rate: processed.flow_rate,
+          total_liters: processed.total_liters,
           history: feeds.map(f => ({
             timestamp: normalizeThingSpeakTimestamp(f.created_at),
-            flow_rate: parseFloat(f[flowRateFieldKey]) || 0,
-            total_liters: parseFloat(f[totalReadingFieldKey]) || 0
+            flow_rate: parseFloat(f[flowField]) || 0,
+            total_liters: parseFloat(f[totalField]) || 0
           }))
         };
 
-        syncNodeStatus(deviceDoc.id, type, lastUpdatedAt, {
+        syncNodeStatus(deviceDoc.id, type, processed.lastUpdatedAt, {
           flow_rate: flowResult.flow_rate,
           total_liters: flowResult.total_liters,
-          status
+          status: processed.status
         }).catch(err => logger.error("Sync error:", err));
 
         await cache.set(analyticsCacheKey, flowResult, 300);

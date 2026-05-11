@@ -72,6 +72,16 @@ export const useFirestoreFlowData = (
             return;
         }
 
+        // Reset state when device changes to prevent leaking data or errors from previous ID
+        setData(prev => ({
+            ...prev,
+            isLoading: true,
+            error: null,
+            volume: null,
+            flowRate: null,
+            timestamp: null
+        }));
+
         // Normalize the device_type to match Firestore collection name
         const collectionName = deviceType.toLowerCase();
         
@@ -127,13 +137,11 @@ export const useFirestoreFlowData = (
 
                 volume = parseVal(docData.total_liters) 
                          ?? parseVal(telemetrySnapshot.total_liters) 
-                         ?? parseVal(docData.volume) 
-                         ?? parseVal(rawData.field1);
+                         ?? parseVal(docData.volume);
 
                 // Flow rate extraction
                 let flowRate = parseVal(docData.flow_rate)
-                               ?? parseVal(telemetrySnapshot.flow_rate)
-                               ?? parseVal(rawData.field3);
+                               ?? parseVal(telemetrySnapshot.flow_rate);
 
                 // Timestamp extraction
                 const timestamp = safeTimestamp(

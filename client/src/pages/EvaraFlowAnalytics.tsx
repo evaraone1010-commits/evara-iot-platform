@@ -44,6 +44,8 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
     const [rangeEnd, setRangeEnd] = useState<string>('');
     const [isHovered, setIsHovered] = useState(false);
 
+
+
     const chartData = useMemo(() => {
         if (history.length === 0) {
             return [];
@@ -612,12 +614,9 @@ const EvaraFlowAnalytics = () => {
 
     // ── Auto-fetch data when device is selected ────────────────────────────────
     useEffect(() => {
-        if (hardwareId) {
-            // Immediately fetch fresh data from ThingSpeak when device is selected
-            refetch();
-        }
+        // Redundant refetch removed. React Query handles initial fetch on mount.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hardwareId]); // IMPORTANT: Only depend on hardwareId, NOT refetch
+    }, [hardwareId]);
 
     const deviceConfig = ('config' in (unifiedData?.config ?? {})
         ? (unifiedData!.config as any).config
@@ -688,7 +687,7 @@ const EvaraFlowAnalytics = () => {
     // ── Firestore Real-time Subscription (replaces direct ThingSpeak fetch) ──
     // The backend TelemetryWorker polls ThingSpeak every 60s, processes the data,
     // and writes to Firestore. We subscribe to that document for live updates.
-    const deviceDocId = deviceInfo?.id || hardwareId;
+    const deviceDocId = deviceInfo?.id; // Priority: UUID from backend, wait for it if null
     const deviceType = deviceConfig?.device_type || (unifiedData as any)?.config?.config?.device_type || 'flow_meter';
     const firestoreFlow = useFirestoreFlowData(deviceDocId, deviceType);
 
@@ -894,6 +893,11 @@ const EvaraFlowAnalytics = () => {
     }, [historyFeeds, fieldTotal]);
 
     const { deltaVolumeLitres, avgFlowLperMin } = useMemo(() => {
+        // Safety: If still loading initial history, return null to show "Fetching" state in UI
+        if (analyticsLoading && meterHistory.length === 0) {
+            return { deltaVolumeLitres: null, avgFlowLperMin: null };
+        }
+
         if (effectiveIsOffline) {
             if (tsFeeds.length >= 2) {
                 const newest = tsFeeds[tsFeeds.length - 1];
@@ -918,7 +922,7 @@ const EvaraFlowAnalytics = () => {
             return { deltaVolumeLitres: 0, avgFlowLperMin: flowRate };
         }
 
-        // Live Mode (existing logic, potentially with similar improvements)
+        // Live Mode
         if (meterHistory.length >= 2) {
             const oldest = meterHistory[0];
             const newest = meterHistory[meterHistory.length - 1];
@@ -1016,10 +1020,6 @@ const EvaraFlowAnalytics = () => {
 
     // Internal helper for KPI display
     const formatKPI = (val: number) => formatKPIValue(val, false);
-
-    // Avg flow in L/hr — kept for potential future use
-    void (avgFlowLperMin * 60);
-    void (maxFlowRate * 60);
 
     if (!hardwareId) return <Navigate to="/nodes" replace />;
 
@@ -1410,7 +1410,7 @@ const EvaraFlowAnalytics = () => {
                                                     <span className="text-[11px] font-black uppercase tracking-widest text-[var(--text-primary)]">USAGE</span>
                                                 </div>
                                                 <span className="text-[1.3rem] lg:text-[1.5rem] font-black text-[var(--text-primary)] leading-none tabular-nums truncate">
-                                                    {formatMeterValue(deltaVolumeLitres > 0 ? deltaVolumeLitres : totalRaw)}
+                                                    {formatMeterValue(deltaVolumeLitres !== null && deltaVolumeLitres > 0 ? deltaVolumeLitres : totalRaw)}
                                                     <span className="text-[0.8rem] font-black text-[#94a3b8] ml-0.5">L</span>
                                                 </span>
                                             </div>

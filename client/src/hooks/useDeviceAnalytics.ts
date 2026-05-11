@@ -302,8 +302,8 @@ export const useDeviceAnalytics = (
       history: {
         feeds: historyFeeds.map((h: any) => ({
           ...h,
-          level_percentage: h.level,
-          total_liters: h.volume,
+          level_percentage: h.level_percentage ?? h.level,
+          total_liters: h.total_liters ?? h.volume,
         })),
       },
       predictive: telemetryResult?.predictive,

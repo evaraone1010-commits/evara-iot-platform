@@ -145,7 +145,7 @@ const processThingSpeakData = async (device, feeds) => {
     if (channelMetadata) {
       logger.debug(`[DeviceState] FLOW: Resolving using channel metadata + sensor_field_mapping`);
       flowField = resolveFieldByName(channelMetadata, mapping, "flow_rate");
-      totalField = resolveFieldByName(channelMetadata, mapping, "total_reading");
+      totalField = resolveFieldByName(channelMetadata, mapping, "total_liters");
       if (flowField && totalField) {
         logger.debug(`[DeviceState] ✅ Resolved FLOW using stable anchor: flow=${flowField}, total=${totalField}`);
       } else {
@@ -157,17 +157,17 @@ const processThingSpeakData = async (device, feeds) => {
     if (!flowField || !totalField) {
       logger.debug(`[DeviceState] FLOW: Using legacy resolution`);
       flowField = flowField || device.flow_rate_field || Object.keys(mapping).find(k => mapping[k] === "flow_rate") || "field3";
-      totalField = totalField || device.meter_reading_field || Object.keys(mapping).find(k => mapping[k] === "total_reading") || "field1";
+      totalField = totalField || device.meter_reading_field || Object.keys(mapping).find(k => mapping[k] === "total_liters") || Object.keys(mapping).find(k => mapping[k] === "total_reading") || "field1";
       logger.debug(`[DeviceState] ✓ Resolved FLOW using legacy: flow=${flowField}, total=${totalField}`);
     }
 
     const flow_rate = parseFloat(latestFeed[flowField] || 0) || 0;
-    const total_reading = parseFloat(latestFeed[totalField] || 0) || 0;
+    const total_liters = parseFloat(latestFeed[totalField] || 0) || 0;
 
     return {
       deviceId: device.id,
       flow_rate,
-      total_reading,
+      total_liters,
       lastUpdatedAt,
       status,
       raw_data: latestFeed,
