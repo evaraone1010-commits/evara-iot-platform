@@ -639,8 +639,17 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
         let start, end;
 
         if (startDate && endDate) {
-            start = new Date(startDate);
-            end = new Date(endDate);
+            // Force 00:00:00 to 23:59:59 in IST (UTC+5:30)
+            const s = new Date(startDate);
+            const e = new Date(endDate);
+            
+            // Normalize to start of day IST (which is 18:30 UTC of previous day)
+            s.setUTCHours(0, 0, 0, 0);
+            start = new Date(s.getTime() - (5.5 * 60 * 60 * 1000));
+            
+            // Normalize to end of day IST (which is 18:29:59 UTC of same day)
+            e.setUTCHours(23, 59, 59, 999);
+            end = new Date(e.getTime() - (5.5 * 60 * 60 * 1000));
         } else {
             end = new Date();
             const daysMap = { "1W": 7, "1M": 30, "3M": 90, "6M": 180 };

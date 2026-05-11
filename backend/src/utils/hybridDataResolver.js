@@ -236,7 +236,7 @@ class HybridDataResolver {
 
       // Format dates to ThingSpeak's preferred format: YYYY-MM-DD%20HH:NN:SS
       const formatDate = (date) => {
-        return date.toISOString().replace("T", " ").split(".")[0];
+        return date.toISOString();
       };
 
       const params = {

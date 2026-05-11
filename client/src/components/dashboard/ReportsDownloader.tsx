@@ -183,7 +183,13 @@ export default function ReportsDownloader({ nodes, isLoading }: ReportsDownloade
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const fileName = `evara_report_${selectedDevice}_${startDate || 'all'}_to_${endDate || 'all'}_${Date.now()}.csv`;
+      
+      // ✅ NEW: Clean professional filename: evara_report_devicename.csv
+      const node = (nodes || []).find(n => (n.id || n.hardwareId) === selectedDevice);
+      const rawName = node ? (node.label || node.displayName || node.name || selectedDevice) : selectedDevice;
+      const cleanName = rawName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      const fileName = `evara_report_${cleanName}.csv`;
+
       a.href = url;
       a.download = fileName;
       document.body.appendChild(a);
