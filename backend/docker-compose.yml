@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MQTT_BROKER_URL=mqtt://mosquitto:1883
+      - PORT=8000
+    depends_on:
+      - redis
+      - mosquitto
+    # ✅ PORT CONFLICT FIX: Always restart on exit, with backoff
+    restart: unless-stopped
+    # ✅ Kill any orphaned processes before starting
+    entrypoint: ["/bin/sh", "-c", "pkill -f 'node.*src/bootstrap.js' 2>/dev/null || true; sleep 2; exec node src/bootstrap.js"]
+    # ✅ Health check for Docker Compose to detect hung processes
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  redis:
+    image: redis:alpine
+    # Expose internally only; do NOT publish Redis to the host in production
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    # Do not publish MQTT ports to the host in production; use internal network only
+    expose:
+      - "1883"
+      - "8883"
+      - "9001"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+      # ✅ CRITICAL FIX #1: Mount security config
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./config/acl.acl:/mosquitto/config/acl.acl
+      # Mount certificates for TLS (uses Docker secrets or mounted volume)
+      - ./config/certs:/mosquitto/certs:ro
+    environment:
+      # MQTT credentials loaded at runtime (production: use Railway secrets)
+      MQTT_USERNAME: backend_service
+      MQTT_PASSWORD: ${MQTT_BACKEND_PASSWORD:-change_me_in_production}
+      # Device list (JSON) — populated via migration job
+      MQTT_DEVICE_PASSWORDS_JSON: ${MQTT_DEVICE_PASSWORDS_JSON:-{}}
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-p", "8883", "-u", "backend_service", "-P", "${MQTT_BACKEND_PASSWORD:-change_me_in_production}", "-t", "test", "-C", "1", "--cafile", "/mosquitto/certs/ca.crt"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ✅ AUDIT FIX M9: Removed TimescaleDB service
+  # Nothing in the codebase uses PostgreSQL/TimescaleDB.
+  # The system uses Firestore as its primary database.
+  # If needed in the future, add back with env-var-based password.
+
+volumes:
+  redis_data:
+  mosquitto_data:
+  mosquitto_log:

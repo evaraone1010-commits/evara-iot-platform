@@ -1,0 +1,12 @@
+{
+    "client/**/*.{js,jsx,ts,tsx}": [
+        "prettier --write",
+        "eslint --fix"
+    ],
+    "client/**/*.{css,scss,md}": [
+        "prettier --write"
+    ],
+    "server/**/*.py": [
+        "autopep8 --in-place"
+    ]
+}

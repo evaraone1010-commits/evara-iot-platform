@@ -1,0 +1,39 @@
+diff --git a/node_modules/react-leaflet/lib/LayersControl.js b/node_modules/react-leaflet/lib/LayersControl.js
+index 78a0e0d..6b704cf 100644
+--- a/node_modules/react-leaflet/lib/LayersControl.js
++++ b/node_modules/react-leaflet/lib/LayersControl.js
+@@ -65,7 +65,7 @@ export function createControlledLayer(addLayerToControl) {
+                 propsRef.current = props;
+             }
+         });
+-        return props.children ? /*#__PURE__*/ React.createElement(LeafletContext, {
++        return props.children ? /*#__PURE__*/ React.createElement(LeafletContext.Provider, {
+             value: context
+         }, props.children) : null;
+     };
+diff --git a/node_modules/react-leaflet/lib/MapContainer.js b/node_modules/react-leaflet/lib/MapContainer.js
+index d19208d..33d783c 100644
+--- a/node_modules/react-leaflet/lib/MapContainer.js
++++ b/node_modules/react-leaflet/lib/MapContainer.js
+@@ -35,7 +35,7 @@ function MapContainerComponent({ bounds, boundsOptions, center, children, classN
+     }, [
+         context
+     ]);
+-    const contents = context ? /*#__PURE__*/ React.createElement(LeafletContext, {
++    const contents = context ? /*#__PURE__*/ React.createElement(LeafletContext.Provider, {
+         value: context
+     }, children) : placeholder ?? null;
+     return /*#__PURE__*/ React.createElement("div", {
+diff --git a/node_modules/react-leaflet/lib/Pane.js b/node_modules/react-leaflet/lib/Pane.js
+index 847447f..ec88520 100644
+--- a/node_modules/react-leaflet/lib/Pane.js
++++ b/node_modules/react-leaflet/lib/Pane.js
+@@ -65,7 +65,7 @@ function PaneComponent(props, forwardedRef) {
+             }
+         };
+     }, []);
+-    return props.children != null && paneElement != null ? /*#__PURE__*/ createPortal(/*#__PURE__*/ React.createElement(LeafletContext, {
++    return props.children != null && paneElement != null ? /*#__PURE__*/ createPortal(/*#__PURE__*/ React.createElement(LeafletContext.Provider, {
+         value: newContext
+     }, props.children), paneElement) : null;
+ }
