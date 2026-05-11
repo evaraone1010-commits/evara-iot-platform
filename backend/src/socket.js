@@ -6,10 +6,29 @@ const { logger } = require("./config/pino.js");
 const { checkOwnership } = require("./middleware/auth.middleware.js");
 const socketValidation = require("./services/socketValidation.js");
 const { telemetryEvents } = require("./workers/telemetryWorker.js");
+const crypto = require("crypto");
 
 // Connection Limit Config
 const MAX_CONNECTIONS_PER_USER = 10;
 const CONNECTION_TTL = 86400; // 24 hours
+const lastEmitTime = new Map(); // deviceId → timestamp
+const EMIT_THROTTLE_MS = 2000;  // max 1 broadcast per device per 2 seconds
+const INSTANCE_ID = process.env.INSTANCE_ID || `inst-${crypto.randomBytes(8).toString('hex')}`;
+
+/**
+ * Throttles broadcasts to prevent frontend flooding
+ */
+function throttledEmit(io, deviceId, event, data) {
+  const now = Date.now();
+  const last = lastEmitTime.get(deviceId) ?? 0;
+
+  if (now - last < EMIT_THROTTLE_MS) {
+    return; // drop duplicate/noisy update
+  }
+
+  lastEmitTime.set(deviceId, now);
+  io.to(`room:${deviceId}`).emit(event, data);
+}
 
 const CONNECTION_LIMIT_LUA_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
@@ -31,27 +50,91 @@ return newCount
 
 const firestoreListeners = new Map();
 
-function registerListener(socketId, unsubscribeFn) {
-  if (!socketId || !unsubscribeFn) return;
-  const existing = firestoreListeners.get(socketId);
-  if (existing && typeof existing === 'function') {
-    firestoreListeners.set(socketId, [existing, unsubscribeFn]);
-  } else if (Array.isArray(existing)) {
-    existing.push(unsubscribeFn);
+/**
+ * Coordinated Firestore listener registration
+ * Tracks ownership in Redis so other instances don't orphan listeners
+ */
+async function registerListener(socketId, deviceId, unsubscribeFn) {
+  if (!socketId || !deviceId || !unsubscribeFn) return;
+  
+  const key = `${socketId}:${deviceId}`;
+  
+  // Track in Redis which instance owns this listener
+  if (cache.isRedisReady && cache.redis) {
+    await cache.redis.set(
+      `listener:${key}`,
+      INSTANCE_ID,
+      'EX', 3600 // 1 hour TTL
+    );
+  }
+
+  firestoreListeners.set(key, unsubscribeFn);
+  logger.debug(`[Socket.io] Registered listener for ${key} on instance ${INSTANCE_ID}`);
+}
+
+/**
+ * Coordinated cleanup
+ */
+async function cleanupListeners(socketId, deviceId = null) {
+  if (!socketId) return;
+
+  const keysToClean = [];
+  if (deviceId) {
+    keysToClean.push(`${socketId}:${deviceId}`);
   } else {
-    firestoreListeners.set(socketId, unsubscribeFn);
+    // Clean all for this socket
+    for (const key of firestoreListeners.keys()) {
+      if (key.startsWith(`${socketId}:`)) {
+        keysToClean.push(key);
+      }
+    }
+  }
+
+  for (const key of keysToClean) {
+    const unsubscribe = firestoreListeners.get(key);
+    if (unsubscribe) {
+      try {
+        unsubscribe();
+        logger.debug(`[Socket.io] Cleaned up local listener for ${key}`);
+      } catch (err) {
+        logger.error(`[Socket.io] Failed to unsubscribe ${key}:`, err.message);
+      }
+      firestoreListeners.delete(key);
+    }
+    
+    if (cache.isRedisReady && cache.redis) {
+      await cache.redis.del(`listener:${key}`);
+    }
   }
 }
 
-function cleanupListeners(socketId) {
-  if (!socketId) return;
-  const listeners = firestoreListeners.get(socketId);
-  if (!listeners) return;
-  const listenerArray = Array.isArray(listeners) ? listeners : [listeners];
-  for (const unsubscribeFn of listenerArray) {
-    try { unsubscribeFn(); } catch (err) { logger.error('[Firestore] Listener unsubscribe failed', { socketId, error: err.message }); }
+/**
+ * On startup — clean up stale Redis keys from this specific instance
+ * to prevent leaking old records if we crashed previously.
+ */
+async function cleanStaleListeners() {
+  if (!cache.isRedisReady || !cache.redis) return;
+
+  try {
+    const keys = await cache.redis.keys('listener:*');
+    let cleaned = 0;
+    
+    for (const key of keys) {
+      const owner = await cache.redis.get(key);
+      // Only clean up if we are the owner or if the key is obviously stale
+      // In a real production system, we'd check if the 'owner' instance is still alive
+      if (owner === INSTANCE_ID) {
+        await cache.redis.del(key);
+        cleaned++;
+      }
+    }
+    
+    if (cleaned > 0) {
+      logger.info(`[Socket.io] Cleaned up ${cleaned} stale listener records for instance ${INSTANCE_ID}`);
+    }
+  } catch (err) {
+    logger.warn('[Socket.io] Stale listener cleanup failed:', err.message);
   }
-  firestoreListeners.delete(socketId);
 }
 
 function initSocket(server, allowedOrigins) {
@@ -82,7 +165,7 @@ function initSocket(server, allowedOrigins) {
             }
 
             socket.on('disconnect', async () => {
-                cleanupListeners(socket.id);
+                await cleanupListeners(socket.id);
                 if (cache.isRedisReady && cache.redis) {
                     await cache.redis.decr(redisKey);
                 }
@@ -165,7 +248,9 @@ function initSocket(server, allowedOrigins) {
             try {
                 const data = socketValidation.validateRoomJoin({ room: `room:${rawData}`, deviceId: rawData });
                 socket.leave(`room:${data.deviceId}`);
-            } catch (err) {}
+            } catch (err) {
+                logger.warn('[Socket.io] Unsubscribe device failed', { error: err.message, payload: rawData });
+            }
         });
     });
 
@@ -176,14 +261,17 @@ function initSocket(server, allowedOrigins) {
             try {
                 const payload = JSON.parse(message);
                 const deviceId = channel.split(":")[2];
-                if (deviceId) io.to(`room:${deviceId}`).emit("device:update", payload);
+                if (deviceId) throttledEmit(io, deviceId, "device:update", payload);
             } catch (err) { logger.error("Redis pubsub parse error:", err); }
         });
     }
 
     telemetryEvents.on("device:update", (payload) => {
-        if (payload?.deviceId) io.to(`room:${payload.deviceId}`).emit("device:update", payload);
+        if (payload?.deviceId) throttledEmit(io, payload.deviceId, "device:update", payload);
     });
+
+    // SaaS Architecture: Multi-Instance coordination
+    cleanStaleListeners();
 
     global.io = io;
     return io;

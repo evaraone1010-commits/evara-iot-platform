@@ -236,6 +236,11 @@ async function processDevice(device) {
                 : "telemetry updated";
             
         logger.debug(`[TelemetryWorker] Updated ${device.id}: ${detail} (${telemetryData.status})`);
+
+        // ✅ AFTER UPDATE: Invalidate graph cache
+        // So the next request gets fresh data from Firestore aggregated view
+        await cache.del(`graph:${device.id}:6H`);
+        await cache.del(`graph:${device.id}:24H`);
     } catch (err) {
         logger.error(`Error processing device ${device.id}`, err, { category: "telemetry", deviceId: device.id });
     }
@@ -259,7 +264,9 @@ async function runPoll() {
                 return;
             }
         } catch (err) {
-            logger.warn('[TelemetryWorker] Failed acquiring distributed lock, running anyway', { error: err.message, category: "telemetry" });
+            logger.error('[TelemetryWorker] Failed acquiring distributed lock; failing closed to prevent duplicate processing', { error: err.message, category: "telemetry" });
+            pollInProgress = false;
+            return;
         }
     }
 
@@ -320,6 +327,9 @@ function startWorker() {
             logger.error('[TelemetryWorker] Poll cycle failed', { error: err.message, category: 'telemetry' });
         }
     }, POLL_INTERVAL);
+    
+    // ✅ .unref() lets Node.js exit cleanly during ECS SIGTERM/SIGKILL
+    telemetryPollTimer.unref();
     
     // CRITICAL FIX: Start dedicated status cron job (runs every 1 minute)
     startStatusCron();

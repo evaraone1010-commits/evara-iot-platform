@@ -14,7 +14,7 @@ module.exports = {
 
   // Status checking threshold - same for all device types
   // If last seen is older than this, device is considered offline
-  STATUS_THRESHOLD_MS: 10 * 60 * 1000, // 10 minutes
+  STATUS_THRESHOLD_MS: 30 * 60 * 1000, // 30 minutes
 
   // Device Types
   DEVICE_TYPES: {

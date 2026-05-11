@@ -81,7 +81,7 @@ async function startServer() {
       if (process.env.MQTT_BROKER_URL) await validateEnv.testMqttConnection(5000);
     }
 
-    server.listen(PORT, async () => {
+    server.listen(PORT, '0.0.0.0', async () => {
         logger.info(`[Server] ✅ Backend running on port ${PORT}`);
         
         if (process.env.NODE_ENV !== 'test' && hasFirestoreConfig()) {
@@ -146,9 +146,9 @@ async function gracefulShutdown(signal, error) {
 
     // Force exit after a timeout
     const forceExit = setTimeout(() => {
-        logger.error('[Server] Forced shutdown after 10s timeout');
+        logger.error('[Server] Forced shutdown after 30s timeout');
         process.exit(1);
-    }, 10000);
+    }, 30000);
     forceExit.unref(); // Do not let this timer keep the process alive
 
     try {
@@ -210,7 +210,7 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 process.on("unhandledRejection", async (reason) => {
-    logger.error("[Global] Unhandled Promise Rejection", reason);
+    logger.error({ error: reason?.message || String(reason), stack: reason?.stack }, "[Global] Unhandled Promise Rejection");
     Sentry.captureException(reason);
     if (process.env.NODE_ENV === "production" && !isShuttingDown) {
         await gracefulShutdown("unhandledRejection");

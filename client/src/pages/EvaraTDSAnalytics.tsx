@@ -222,8 +222,8 @@ const EvaraTDSAnalytics = () => {
         const diffMs = now.getTime() - lastSeenDate.getTime();
         const diffMin = diffMs / 60000;
 
-        // Unified 10-minute threshold
-        const isOffline = diffMin > 10;
+        // Unified 30-minute threshold
+        const isOffline = diffMin > 30;
 
         if (lastSeenDate.getTime() === 0) {
             return { 

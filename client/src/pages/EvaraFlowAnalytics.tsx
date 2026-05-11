@@ -747,8 +747,8 @@ const EvaraFlowAnalytics = () => {
         const diffMs = now.getTime() - lastSeenDate.getTime();
         const diffMin = diffMs / 60000;
         
-        // 10 minutes threshold for "Offline" status
-        const offline = diffMin > 10;
+        // 30 minutes threshold for "Offline" status
+        const offline = diffMin > 30;
 
         // IST Formatting (21 Mar 2026, 14:44 IST)
         const formatOptions: Intl.DateTimeFormatOptions = {

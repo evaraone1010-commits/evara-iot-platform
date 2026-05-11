@@ -17,6 +17,6 @@ async function main() {
 }
 
 main().catch((error) => {
-    console.error("[Bootstrap] Unhandled startup error:", error);
+    console.error("[Bootstrap] Unhandled startup error:", error.message, "\nStack:", error.stack);
     process.exit(1);
 });

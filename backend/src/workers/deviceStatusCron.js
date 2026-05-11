@@ -64,11 +64,11 @@ async function tryAcquireCronLock() {
     const acquired = await cache.redis.set(CRON_LOCK_KEY, lockValue, "EX", lockTtlSec, "NX");
     return acquired === "OK";
   } catch (err) {
-    logger.warn("[DeviceStatusCron] Failed to acquire distributed lock; running sweep to avoid stalling", {
+    logger.error("[DeviceStatusCron] Failed to acquire distributed lock; failing closed to prevent duplicate sweeps", {
       category: "cron",
       error: err.message
     });
-    return true;
+    return false;
   }
 }
 
@@ -108,18 +108,20 @@ async function recalculateAllDevicesStatus() {
             }
         }
 
-        // 2. Fetch metadata for this chunk
+        // 2. Fetch metadata for this chunk concurrently
         const allTypeItems = [];
-        for (const type of Object.keys(typedGroups)) {
-            const ids = typedGroups[type];
-            const refs = ids.map(id => db.collection(type.toLowerCase()).doc(id));
-            const metas = await db.getAll(...refs);
-            for (const m of metas) {
-                if (m.exists) {
-                    allTypeItems.push({ id: m.id, type, meta: m.data() });
-                }
-            }
-        }
+        const typeBatches = await Promise.all(
+            Object.keys(typedGroups).map(async (type) => {
+                const ids = typedGroups[type];
+                const refs = ids.map(id => db.collection(type.toLowerCase()).doc(id));
+                const metas = await db.getAll(...refs);
+                return metas
+                    .filter(m => m.exists)
+                    .map(m => ({ id: m.id, type, meta: m.data() }));
+            })
+        );
+        
+        typeBatches.forEach(batch => allTypeItems.push(...batch));
 
         // 3. Recalculate status and queue updates
         let chunkChanges = 0;
@@ -212,6 +214,9 @@ function startStatusCron() {
       logger.error('[DeviceStatusCron] Status sweep cycle failed', { error: err.message, category: 'cron' });
     }
   }, STATUS_CHECK_INTERVAL);
+
+  // ✅ .unref() lets Node.js exit cleanly during AWS ECS task termination
+  statusCronTimer.unref();
 
   return statusCronTimer;
 }

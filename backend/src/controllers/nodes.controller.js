@@ -232,6 +232,7 @@ exports.getNodes = async (req, res, next) => {
                         zoneMap[doc.id] = doc.data().zoneName || doc.data().name || doc.id;
                     }
                 });
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
         logger.debug(`[NodesController] Loaded zone map with ${Object.keys(zoneMap).length} entries`);
@@ -253,6 +254,7 @@ exports.getNodes = async (req, res, next) => {
                         customerMap[doc.id] = name;
                     }
                 });
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
         logger.debug(`[NodesController] Loaded customer map with ${Object.keys(customerMap).length} entries`);
@@ -423,14 +425,6 @@ exports.getNodes = async (req, res, next) => {
         // there's no point in caching. Status accuracy > performance optimization
         // Once status is stored in DB reliably, we can re-enable caching
         
-        // Legacy code - keeping for reference but disabled:
-        // if (shouldUseCache && !filterCustomerId) {
-        //     logger.debug(`[NodesController] Caching superadmin result for ${Math.ceil(nodes.length / 2)} seconds`);
-        //     await cache.set(nodesCacheKey, nodes, Math.ceil(nodes.length / 2));
-        // } else if (filterCustomerId) {
-        //     logger.debug(`[NodesController] ALWAYS FRESH: Customer-specific query - NOT cached`);
-        // }
-        
         logger.debug(`[NodesController] ALWAYS FRESH: Device list not cached (status accuracy priority)`);
         
         res.status(200).json({
@@ -575,109 +569,35 @@ exports.getNodeTelemetry = async (req, res) => {
 
 
 exports.getNodeGraphData = async (req, res, next) => {
-    try {
-        const deviceDoc = await resolveDevice(req.params.id);
-        if (!deviceDoc || !deviceDoc.exists) return res.status(404).json({ error: "Device not found" });
+  try {
+    const { id: nodeId } = req.params;
+    const { window = '6H' } = req.query;
 
-        const registry = deviceDoc.data();
-        const type = (registry.device_type || "").toLowerCase();
-        if (!type) return res.status(400).json({ error: "Device type not specified" });
+    const resolver = new HybridDataResolver(nodeId);
 
-        const metaDoc = await db.collection(type).doc(deviceDoc.id).get();
-        if (!metaDoc.exists) return res.status(404).json({ error: "Metadata not found" });
-
-        if (req.user.role !== "superadmin") {
-            const isOwner = await checkOwnership(req.user.customer_id || req.user.uid, deviceDoc.id, req.user.role, req.user.community_id);
-            if (!isOwner) return res.status(403).json({ error: "Unauthorized" });
-
-            // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-            if (!checkDeviceVisibilityWithAudit(registry, deviceDoc.id, req.user.uid, req.user.role)) {
-                return res.status(403).json({ error: "Device not visible to your account" });
-            }
-        }
-
-        const metadata = metaDoc.data();
-        const channelId = metadata.thingspeak_channel_id?.trim();
-        const apiKey = metadata.thingspeak_read_api_key?.trim();
-        const { incremental = false, lastTimestamp } = req.query;
-
-        if (!channelId || !apiKey) {
-            return res.status(200).json({
-                data: [],
-                metrics: {
-                    currentLevel: null,
-                    volume: null,
-                    fillRate: null,
-                    consumption: null,
-                    status: DEVICE_STATUS.OFFLINE
-                }
-            });
-        }
-
-        try {
-            if (incremental === 'true' && lastTimestamp) {
-                const latestPoint = await fetchLatestData(channelId, apiKey, lastTimestamp);
-
-                if (!latestPoint) {
-                    return res.status(200).json({
-                        data: [],
-                        lastTimestamp: lastTimestamp,
-                        hasNewData: false,
-                        metrics: null
-                    });
-                }
-
-                return res.status(200).json({
-                    data: [latestPoint],
-                    lastTimestamp: latestPoint.timestamp,
-                    hasNewData: true,
-                    metrics: null
-                });
-            } else {
-                const fullData = await fetchSixHourData(channelId, apiKey);
-
-                if (!fullData || fullData.length === 0) {
-                    return res.status(200).json({
-                        data: [],
-                        lastTimestamp: null,
-                        hasNewData: false,
-                        metrics: {
-                            currentLevel: null,
-                            volume: null,
-                            fillRate: null,
-                            consumption: null,
-                            status: DEVICE_STATUS.OFFLINE
-                        }
-                    });
-                }
-
-                const smoothedData = applyLightSmoothing(fullData);
-                const metrics = calculateMetrics(smoothedData);
-
-                return res.status(200).json({
-                    data: smoothedData,
-                    lastTimestamp: smoothedData.length > 0 ? smoothedData[smoothedData.length - 1].timestamp : null,
-                    hasNewData: smoothedData.length > 0,
-                    metrics: metrics
-                });
-            }
-        } catch (err) {
-            return res.status(200).json({
-                data: [],
-                lastTimestamp: lastTimestamp || null,
-                hasNewData: false,
-                metrics: {
-                    currentLevel: null,
-                    volume: null,
-                    fillRate: null,
-                    consumption: null,
-                    status: DEVICE_STATUS.OFFLINE
-                }
-            });
-        }
-    } catch (error) {
-        next(error);
+    // 1. Try Redis cache first (written by telemetryWorker)
+    const cached = await resolver.getFromCache(window);
+    if (cached) {
+      return res.json({ success: true, source: 'cache', data: cached });
     }
+
+    // 2. Try Firestore aggregated data
+    const stored = await resolver.getFromFirestore(window);
+    if (stored && stored.length > 0) {
+      // Warm the cache for next request
+      await resolver.setCache(window, stored);
+      return res.json({ success: true, source: 'firestore', data: stored });
+    }
+
+    // 3. Last resort — ThingSpeak direct (only if no stored data at all)
+    // This path is only hit for brand-new devices with zero history
+    const fresh = await resolver.getFromThingSpeak(window);
+    await resolver.setCache(window, fresh);
+    return res.json({ success: true, source: 'thingspeak', data: fresh });
+
+  } catch (err) {
+    return next(err);
+  }
 };
 
 /**

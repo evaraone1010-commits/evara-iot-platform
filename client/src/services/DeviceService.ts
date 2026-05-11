@@ -57,9 +57,9 @@ export function computeDeviceStatus(lastTimestamp: any): "Online" | "Offline" {
 
     const ageMs = Date.now() - date.getTime();
     
-    // 10 minutes threshold (600,000 ms)
+    // 30 minutes threshold (1,800,000 ms)
     // Any negative ageMs (future timestamp) evaluates to < thresholdMs here, which is intended.
-    if (ageMs < 600000) {
+    if (ageMs < 1800000) {
         return "Online";
     }
 
