@@ -21,13 +21,11 @@ const FIREBASE_VARS = [
 ];
 
 const PRODUCTION_ONLY = [
-    "REDIS_URL",
-    "SENTRY_DSN"
+    // No required production-only vars for Railway deployment
 ];
 
 const SECRETS_MANAGER_VARS = [
-    "AWS_REGION",
-    "APP_SECRET_ID"
+    // AWS Secrets Manager is optional
 ];
 
 function validateEnv() {
@@ -73,22 +71,15 @@ function validateEnv() {
 
     // Production-only validation
     if (isProd) {
-        const missingSecretsManager = SECRETS_MANAGER_VARS.filter(v => !process.env[v]);
-        if (missingSecretsManager.length > 0) {
-            logger.error("❌ PRODUCTION: Missing required AWS Secrets Manager env vars:", missingSecretsManager.join(', '));
-            process.exit(1);
-        }
-
+        // AWS Secrets Manager is optional - skip validation if not configured
         const missingProd = PRODUCTION_ONLY.filter(v => !process.env[v]);
         if (missingProd.length > 0) {
-            logger.error("❌ PRODUCTION: Missing required production env vars:", missingProd.join(', '));
-            process.exit(1);
+            logger.warn("⚠️  PRODUCTION: Optional production env vars not set:", missingProd.join(', '));
         }
 
-        // Enforce TLS for Redis in production
+        // Enforce TLS for Redis in production (only if Redis is configured)
         if (process.env.REDIS_URL && !(process.env.REDIS_URL.startsWith('rediss://') || process.env.REDIS_TLS === 'true')) {
-            logger.error("❌ PRODUCTION: Redis must use TLS (rediss://) or set REDIS_TLS=true in production.");
-            process.exit(1);
+            logger.warn("⚠️  PRODUCTION: Redis configured without TLS. Consider using rediss:// for security.");
         }
 
         // Enforce TLS for MQTT in production when enabled
