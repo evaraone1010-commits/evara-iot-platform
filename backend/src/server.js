@@ -28,6 +28,9 @@ if (process.env.SENTRY_DSN) {
 let app, allowedOrigins, initSocket, cache, TelemetryArchiveService, startWorker;
 let server;
 let io;
+let telemetryCleanupJob;
+let telemetryCleanupRunning = false;
+let mqttRuntime = null;
 
 async function startServer() {
   try {
@@ -69,27 +72,32 @@ async function startServer() {
           }
         }
 
-        // Schedule daily telemetry cleanup
+        // Schedule daily telemetry cleanup (optional)
         try {
             const policy = TelemetryArchiveService.getRetentionPolicy();
             const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
             telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
                 if (telemetryCleanupRunning) return;
-                const hasLock = await tryAcquireDistributedLock(TELEMETRY_CLEANUP_LOCK_KEY, 3600);
-                if (!hasLock) return;
                 telemetryCleanupRunning = true;
                 try {
                     const result = await TelemetryArchiveService.cleanupOldTelemetry();
                     if (result.success) await TelemetryArchiveService.logCleanupStats();
-                } finally { telemetryCleanupRunning = false; }
+                } catch (err) {
+                    logger.error({ error: err.message }, '[Server] Cleanup failed');
+                } finally { 
+                    telemetryCleanupRunning = false; 
+                }
             });
-        } catch (err) { logger.error({ error: err.message }, '[Server] Cleanup scheduling failed'); }
+        } catch (err) { 
+            logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
+        }
         
         if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
-          initializeMqttIngestion();
-          startWorker();
-        } else if (process.env.NODE_ENV !== "test") {
-          logger.info(`[Server] Skipping telemetry worker startup; Firebase credential source is '${getFirebaseCredentialSource()}'.`);
+          try {
+            startWorker();
+          } catch (err) {
+            logger.warn({ error: err.message }, '[Server] Worker startup failed');
+          }
         }
     });
   } catch (error) {
@@ -204,5 +212,8 @@ process.on("uncaughtException", async (err) => {
     }
 });
 
-module.exports = server;
-module.exports.startServer = startServer;
+// Export after startup
+module.exports = {
+    startServer,
+    getServer: () => server
+};
