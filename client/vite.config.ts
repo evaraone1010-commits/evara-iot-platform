@@ -42,6 +42,7 @@ export default defineConfig({
           ],
           "vendor-charts": ["recharts"],
           "vendor-maps": ["leaflet", "react-leaflet"],
+          "firebase": ["firebase/app", "firebase/auth", "firebase/firestore"],
         },
       },
     },
