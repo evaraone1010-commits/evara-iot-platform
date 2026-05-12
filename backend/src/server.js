@@ -1,6 +1,12 @@
-// Force load .env file for Railway, overriding any other configuration.
+// Load environment variables based on NODE_ENV
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env'), override: true });
+if (process.env.NODE_ENV === 'production') {
+  // In production (Railway), load a dedicated, non-ignored .env file.
+  require('dotenv').config({ path: path.resolve(__dirname, '..', '..', 'production.env'), override: true });
+} else {
+  // In development, load the standard, ignored .env file.
+  require('dotenv').config();
+}
 
 const http = require("http");
 const schedule = require("node-schedule");
