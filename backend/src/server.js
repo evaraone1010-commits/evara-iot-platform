@@ -59,46 +59,52 @@ async function startServer() {
 
     // Step 5: Start listening for connections
     const PORT = process.env.PORT || 8000;
-    server.listen(PORT, '0.0.0.0', async () => {
+    server.listen(PORT, '0.0.0.0', () => {
         logger.info(`[Server] ✅ Backend running on port ${PORT}`);
         
-        // Step 6: Initialize post-start services
-        if (process.env.NODE_ENV !== 'test' && hasExplicitFirebaseCredentials()) {
-          try { 
-            const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
-            await initializeCacheVersions(); 
-          } catch (err) { 
-            logger.warn({ error: err.message }, '[Server] Cache versioning failed'); 
-          }
-        }
-
-        // Schedule daily telemetry cleanup (optional)
-        try {
-            const policy = TelemetryArchiveService.getRetentionPolicy();
-            const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
-            telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
-                if (telemetryCleanupRunning) return;
-                telemetryCleanupRunning = true;
-                try {
-                    const result = await TelemetryArchiveService.cleanupOldTelemetry();
-                    if (result.success) await TelemetryArchiveService.logCleanupStats();
-                } catch (err) {
-                    logger.error({ error: err.message }, '[Server] Cleanup failed');
-                } finally { 
-                    telemetryCleanupRunning = false; 
+        // Initialize post-start services (non-blocking, fire and forget with error handling)
+        setImmediate(async () => {
+            try {
+                if (process.env.NODE_ENV !== 'test' && hasExplicitFirebaseCredentials()) {
+                  try { 
+                    const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
+                    await initializeCacheVersions(); 
+                  } catch (err) { 
+                    logger.warn({ error: err.message }, '[Server] Cache versioning failed'); 
+                  }
                 }
-            });
-        } catch (err) { 
-            logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
-        }
-        
-        if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
-          try {
-            startWorker();
-          } catch (err) {
-            logger.warn({ error: err.message }, '[Server] Worker startup failed');
-          }
-        }
+
+                // Schedule daily telemetry cleanup (optional)
+                try {
+                    const policy = TelemetryArchiveService.getRetentionPolicy();
+                    const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
+                    telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
+                        if (telemetryCleanupRunning) return;
+                        telemetryCleanupRunning = true;
+                        try {
+                            const result = await TelemetryArchiveService.cleanupOldTelemetry();
+                            if (result.success) await TelemetryArchiveService.logCleanupStats();
+                        } catch (err) {
+                            logger.error({ error: err.message }, '[Server] Cleanup failed');
+                        } finally { 
+                            telemetryCleanupRunning = false; 
+                        }
+                    });
+                } catch (err) { 
+                    logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
+                }
+                
+                if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
+                  try {
+                    startWorker();
+                  } catch (err) {
+                    logger.warn({ error: err.message }, '[Server] Worker startup failed');
+                  }
+                }
+            } catch (err) {
+                logger.error({ error: err.message, stack: err.stack }, '[Server] Post-startup initialization error');
+            }
+        });
     });
   } catch (error) {
     logger.error("[Server] Error during startup:", error);
@@ -107,7 +113,10 @@ async function startServer() {
 }
 
 if (require.main === module) {
-  startServer();
+  startServer().catch(err => {
+    logger.error({ error: err.message, stack: err.stack }, '[Global] Fatal startup error');
+    process.exit(1);
+  });
 }
 
 // ============================================================================
