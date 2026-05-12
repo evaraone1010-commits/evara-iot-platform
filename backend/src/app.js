@@ -1,3 +1,6 @@
+// IMPORTANT: Initialize Firebase before any other module tries to use it.
+require('./config/firebase-secure');
+
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
