@@ -1,5 +1,6 @@
 // CRITICAL: Initialize Firebase before any other module is loaded.
 require('./config/firebase-secure');
+// END OF FIREBASE INITIALIZATION
 
 const http = require("http");
 const schedule = require("node-schedule");
