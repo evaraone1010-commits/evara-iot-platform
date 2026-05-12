@@ -35,10 +35,12 @@ let mqttRuntime = null;
 async function startServer() {
   try {
     // Step 1: Ensure Firebase is initialized before loading any other modules
+    logger.info("[Server] Initializing Firebase...");
     await initializeFirebase();
     logger.info("[Server] Firebase initialization complete.");
 
     // Step 2: Now that Firebase is ready, load all other modules
+    logger.info("[Server] Loading application modules...");
     const appModule = require("./app.js");
     app = appModule.app;
     allowedOrigins = appModule.allowedOrigins;
@@ -46,6 +48,7 @@ async function startServer() {
     cache = require("./config/cache.js");
     TelemetryArchiveService = require("./services/telemetryArchiveService.js");
     startWorker = require("./workers/telemetryWorker.js").startWorker;
+    logger.info("[Server] All modules loaded successfully.");
     
     // Step 3: Create server and initialize sockets
     server = http.createServer(app);
@@ -59,55 +62,71 @@ async function startServer() {
 
     // Step 5: Start listening for connections
     const PORT = process.env.PORT || 8000;
-    server.listen(PORT, '0.0.0.0', async () => {
+    server.listen(PORT, '0.0.0.0', () => {
         logger.info(`[Server] ✅ Backend running on port ${PORT}`);
         
-        // Step 6: Initialize post-start services
-        if (process.env.NODE_ENV !== 'test' && hasExplicitFirebaseCredentials()) {
-          try { 
-            const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
-            await initializeCacheVersions(); 
-          } catch (err) { 
-            logger.warn({ error: err.message }, '[Server] Cache versioning failed'); 
-          }
-        }
-
-        // Schedule daily telemetry cleanup (optional)
-        try {
-            const policy = TelemetryArchiveService.getRetentionPolicy();
-            const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
-            telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
-                if (telemetryCleanupRunning) return;
-                telemetryCleanupRunning = true;
-                try {
-                    const result = await TelemetryArchiveService.cleanupOldTelemetry();
-                    if (result.success) await TelemetryArchiveService.logCleanupStats();
-                } catch (err) {
-                    logger.error({ error: err.message }, '[Server] Cleanup failed');
-                } finally { 
-                    telemetryCleanupRunning = false; 
+        // Initialize post-start services (non-blocking, fire and forget with error handling)
+        setImmediate(async () => {
+            try {
+                if (process.env.NODE_ENV !== 'test' && hasExplicitFirebaseCredentials()) {
+                  try { 
+                    const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
+                    await initializeCacheVersions(); 
+                  } catch (err) { 
+                    logger.warn({ error: err.message }, '[Server] Cache versioning failed'); 
+                  }
                 }
-            });
-        } catch (err) { 
-            logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
-        }
-        
-        if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
-          try {
-            startWorker();
-          } catch (err) {
-            logger.warn({ error: err.message }, '[Server] Worker startup failed');
-          }
-        }
+
+                // Schedule daily telemetry cleanup (optional)
+                try {
+                    if (TelemetryArchiveService && typeof TelemetryArchiveService.getRetentionPolicy === 'function') {
+                        const policy = TelemetryArchiveService.getRetentionPolicy();
+                        const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
+                        telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
+                            if (telemetryCleanupRunning) return;
+                            telemetryCleanupRunning = true;
+                            try {
+                                const result = await TelemetryArchiveService.cleanupOldTelemetry();
+                                if (result.success) await TelemetryArchiveService.logCleanupStats();
+                            } catch (err) {
+                                logger.error({ error: err.message }, '[Server] Cleanup failed');
+                            } finally { 
+                                telemetryCleanupRunning = false; 
+                            }
+                        });
+                    } else {
+                        logger.warn('[Server] TelemetryArchiveService not available for cleanup scheduling');
+                    }
+                } catch (err) { 
+                    logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
+                }
+                
+                if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
+                  try {
+                    startWorker();
+                  } catch (err) {
+                    logger.warn({ error: err.message }, '[Server] Worker startup failed');
+                  }
+                }
+            } catch (err) {
+                logger.error({ error: err.message, stack: err.stack }, '[Server] Post-startup initialization error');
+            }
+        });
     });
   } catch (error) {
-    logger.error("[Server] Error during startup:", error);
+    const errorMsg = error?.message || String(error) || 'Unknown error';
+    const errorStack = error?.stack || '';
+    logger.error({ error: errorMsg, stack: errorStack }, "[Server] Error during startup");
+    console.error("[Server] FATAL ERROR:", errorMsg, errorStack);
     process.exit(1);
   }
 }
 
 if (require.main === module) {
-  startServer();
+  startServer().catch(err => {
+    logger.error({ error: err.message, stack: err.stack }, '[Global] Fatal startup error');
+    process.exit(1);
+  });
 }
 
 // ============================================================================
