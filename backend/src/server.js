@@ -35,10 +35,12 @@ let mqttRuntime = null;
 async function startServer() {
   try {
     // Step 1: Ensure Firebase is initialized before loading any other modules
+    logger.info("[Server] Initializing Firebase...");
     await initializeFirebase();
     logger.info("[Server] Firebase initialization complete.");
 
     // Step 2: Now that Firebase is ready, load all other modules
+    logger.info("[Server] Loading application modules...");
     const appModule = require("./app.js");
     app = appModule.app;
     allowedOrigins = appModule.allowedOrigins;
@@ -46,6 +48,7 @@ async function startServer() {
     cache = require("./config/cache.js");
     TelemetryArchiveService = require("./services/telemetryArchiveService.js");
     startWorker = require("./workers/telemetryWorker.js").startWorker;
+    logger.info("[Server] All modules loaded successfully.");
     
     // Step 3: Create server and initialize sockets
     server = http.createServer(app);
@@ -107,7 +110,10 @@ async function startServer() {
         });
     });
   } catch (error) {
-    logger.error("[Server] Error during startup:", error);
+    const errorMsg = error?.message || String(error) || 'Unknown error';
+    const errorStack = error?.stack || '';
+    logger.error({ error: errorMsg, stack: errorStack }, "[Server] Error during startup");
+    console.error("[Server] FATAL ERROR:", errorMsg, errorStack);
     process.exit(1);
   }
 }
