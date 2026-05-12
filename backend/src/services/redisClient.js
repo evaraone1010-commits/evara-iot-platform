@@ -4,28 +4,21 @@ const redisUrl = process.env.REDIS_URL || null;
 let client = null;
 
 if (!redisUrl) {
-  logger.info('Redis URL not set; Redis features will remain disabled in development');
+  logger.info('[Cache] REDIS_URL not set in production');
   module.exports = null;
 } else {
   try {
     const Redis = require('ioredis');
-    const useTls = redisUrl.startsWith('rediss:') || process.env.REDIS_TLS === 'true';
-    const redisOptions = {
-      ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
-      ...(process.env.REDIS_USERNAME ? { username: process.env.REDIS_USERNAME } : {}),
-      ...(useTls
-        ? {
-            tls: {
-              rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
-            }
-          }
-        : {}),
-      maxRetriesPerRequest: 1,
-      connectTimeout: 2000,
-      retryStrategy: () => null
-    };
-
-    client = new Redis(redisUrl, redisOptions);
+    // Railway provides the full URL, so we don't need to construct options manually.
+    client = new Redis(redisUrl, {
+      // Basic options for Railway
+      maxRetriesPerRequest: 3,
+      connectTimeout: 10000,
+      retryStrategy(times) {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+      },
+    });
 
     client.on('error', (err) => {
       logger.error('Redis Client Error', err);

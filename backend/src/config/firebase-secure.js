@@ -7,24 +7,41 @@ const LOCAL_SERVICE_ACCOUNT_PATH = path.join(__dirname, "..", "..", "service-acc
 let firebaseCredentialSource = "adc";
 
 function buildFirebaseConfigFromEnv() {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-    if (!projectId || !clientEmail || !privateKey) {
-        return null;
+  // New: Check for Railway's single FIREBASE_CREDENTIALS variable
+  if (process.env.FIREBASE_CREDENTIALS) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+      return {
+        credential: admin.credential.cert(serviceAccount),
+        projectId: serviceAccount.project_id,
+        databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`,
+        storageBucket: `${serviceAccount.project_id}.appspot.com`,
+      };
+    } catch (e) {
+      logger.error('[Firebase] Failed to parse FIREBASE_CREDENTIALS JSON:', e.message);
+      return null;
     }
+  }
 
-    return {
-        credential: admin.credential.cert({
-            projectId,
-            clientEmail,
-            privateKey: privateKey.replace(/\\n/g, "\n"),
-        }),
-        projectId,
-        databaseURL: process.env.FIREBASE_DATABASE_URL || undefined,
-        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
-    };
+  // Legacy support for separate env vars
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+  if (!projectId || !clientEmail || !privateKey) {
+    return null;
+  }
+
+  return {
+    credential: admin.credential.cert({
+      projectId,
+      clientEmail,
+      privateKey: privateKey.replace(/\\n/g, '\n'),
+    }),
+    projectId,
+    databaseURL: process.env.FIREBASE_DATABASE_URL || undefined,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
+  };
 }
 
 if (!admin.apps.length) {
