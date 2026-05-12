@@ -6,42 +6,18 @@ const path = require("path");
 const LOCAL_SERVICE_ACCOUNT_PATH = path.join(__dirname, "..", "..", "service-account.json");
 let firebaseCredentialSource = "adc";
 
-function buildFirebaseConfigFromEnv() {
-  // New: Check for Railway's single FIREBASE_CREDENTIALS variable
-  if (process.env.FIREBASE_CREDENTIALS) {
-    try {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-      return {
-        credential: admin.credential.cert(serviceAccount),
-        projectId: serviceAccount.project_id,
-        databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`,
-        storageBucket: `${serviceAccount.project_id}.appspot.com`,
-      };
-    } catch (e) {
-      logger.error('[Firebase] Failed to parse FIREBASE_CREDENTIALS JSON:', e.message);
-      return null;
-    }
+// Standard way to load credentials in production environments like Railway/GCP
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  try {
+    const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+    firebaseConfig = {
+      credential: admin.credential.cert(serviceAccount),
+      projectId: serviceAccount.project_id,
+    };
+    firebaseCredentialSource = 'env_json';
+  } catch (e) {
+    logger.error('[Firebase] Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', e.message);
   }
-
-  // Legacy support for separate env vars
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-  if (!projectId || !clientEmail || !privateKey) {
-    return null;
-  }
-
-  return {
-    credential: admin.credential.cert({
-      projectId,
-      clientEmail,
-      privateKey: privateKey.replace(/\\n/g, '\n'),
-    }),
-    projectId,
-    databaseURL: process.env.FIREBASE_DATABASE_URL || undefined,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
-  };
 }
 
 if (!admin.apps.length) {
@@ -69,35 +45,48 @@ if (!admin.apps.length) {
                 admin.initializeApp();
             }
         } catch (err) {
-            logger.error('[Firebase] Error while attempting to load local service-account.json:', err.message);
-            firebaseCredentialSource = "adc";
-            admin.initializeApp();
-        }
+  let firebaseConfig = null;
+  let firebaseCredentialSource = 'uninitialized';
+
+  // Standard way to load credentials in production environments like Railway/GCP
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+    try {
+      const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+      firebaseConfig = {
+        credential: admin.credential.cert(serviceAccount),
+        projectId: serviceAccount.project_id,
+      };
+      firebaseCredentialSource = 'env_json';
+      logger.debug('[Firebase] Initializing Admin SDK from GOOGLE_APPLICATION_CREDENTIALS_JSON');
+      admin.initializeApp(firebaseConfig);
+    } catch (e) {
+      logger.error('[Firebase] Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', e.message);
     }
-}
+  }
 
-const db = admin.firestore();
-
-function hasExplicitFirebaseCredentials() {
-    return firebaseCredentialSource === "env" || firebaseCredentialSource === "local-file";
-}
-
-function getFirebaseCredentialSource() {
-    return firebaseCredentialSource;
-}
-
-module.exports = { db, admin, hasExplicitFirebaseCredentials, getFirebaseCredentialSource };
-
-// Non-blocking startup connectivity test
-(async () => {
-  try {
-        if (!hasExplicitFirebaseCredentials() && process.env.NODE_ENV !== 'production') {
-            logger.info("[Firebase] Explicit Firebase credentials are not configured; skipping Firestore connectivity probe in development.");
-            return;
-        }
-
-    const testStart = Date.now();
-    const snapshot = await db.collection("zones").limit(1).get();
+  // Fallback for local development
+  if (!admin.apps.length) {
+    try {
+      if (fs.existsSync(LOCAL_SERVICE_ACCOUNT_PATH) && process.env.NODE_ENV !== 'production') {
+        logger.info('[Firebase] service-account.json found locally — initializing Admin SDK from file (development only)');
+        const sa = require(LOCAL_SERVICE_ACCOUNT_PATH);
+        firebaseCredentialSource = 'local-file';
+        admin.initializeApp({
+          credential: admin.credential.cert(sa),
+          projectId: sa.project_id,
+        });
+      } else {
+        logger.info('[Firebase] No explicit Firebase credentials found — initializing Admin SDK with ADC');
+        firebaseCredentialSource = 'adc';
+        admin.initializeApp();
+      }
+    } catch (err) {
+      logger.error('[Firebase] Error during fallback initialization:', err.message);
+      if (!admin.apps.length) {
+        admin.initializeApp(); // Final attempt with ADC
+      }
+    }
+  const snapshot = await db.collection("zones").limit(1).get();
     const elapsed = Date.now() - testStart;
     logger.debug(`[Firebase] ✅ Firestore connectivity OK (${elapsed}ms, docs: ${snapshot.size})`);
   } catch (err) {
