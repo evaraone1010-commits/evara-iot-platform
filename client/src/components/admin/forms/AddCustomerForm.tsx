@@ -4,6 +4,7 @@
  */
 import { useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useQueryClient } from "@tanstack/react-query";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion } from "framer-motion";
 import {
@@ -32,6 +33,7 @@ interface Props {
 
 export const AddCustomerForm = ({ onSubmit, onCancel, initialData }: Props) => {
   const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const isEdit = !!initialData;
   const { zones, isLoading: loadingRegions } = useZones();
 
@@ -67,6 +69,12 @@ export const AddCustomerForm = ({ onSubmit, onCancel, initialData }: Props) => {
         result = await adminService.createCustomer(data);
         showToast("Customer created successfully", "success");
       }
+
+      // Invalidate queries to ensure UI updates everywhere
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard_summary"] });
+
       onSubmit(result);
     } catch (err: any) {
       showToast(
@@ -248,12 +256,13 @@ export const AddCustomerForm = ({ onSubmit, onCancel, initialData }: Props) => {
           disabled={isSubmitting}
           className="flex items-center gap-2 px-8 py-3 bg-[#3A7AFE] text-white text-sm font-bold rounded-xl hover:bg-[#2563EB] transition-all disabled:opacity-50 shadow-md"
         >
-          {isSubmitting ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <CheckCircle size={16} />
-          )}
-          {isSubmitting ? "Creating User..." : "Add Customer Account"}
+          {isSubmitting
+            ? isEdit
+              ? "Updating..."
+              : "Creating..."
+            : isEdit
+              ? "Update Profile"
+              : "Add Customer Account"}
         </motion.button>
       </div>
     </form>

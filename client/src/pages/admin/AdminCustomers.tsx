@@ -1,20 +1,28 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { adminService } from "../../services/admin";
-import { User, Search, MapPin, Filter, Plus } from "lucide-react";
+import { deviceService } from "../../services/DeviceService";
+import { User, Search, MapPin, Filter, Plus, Edit2, Trash2, AlertTriangle } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
 import { AddCustomerForm } from "../../components/admin/forms/AddCustomerForm";
+import { useToast } from "../../components/ToastProvider";
 
 const AdminCustomers = () => {
   const navigate = useNavigate();
   const { role, loading: authLoading } = useAuth();
+  const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [clients, setClients] = useState<any[]>([]);
 
   const [zones, setZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [customerToDelete, setCustomerToDelete] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fetchClients = async () => {
     try {
@@ -22,7 +30,23 @@ const AdminCustomers = () => {
         adminService.getCustomers(),
         adminService.getRegions(),
       ]);
-      setClients(Array.isArray(custData) ? custData : []);
+      const clientsArr = Array.isArray(custData) ? custData : [];
+      // Fetch nodes once and aggregate by customer id
+      const nodes = await deviceService.getMapNodes();
+      const byCustomer: Record<string, any[]> = {};
+      nodes.forEach((n: any) => {
+        const cid = n.customer_id || n.customerId || n.customer || n.customer_id;
+        if (!cid) return;
+        if (!byCustomer[cid]) byCustomer[cid] = [];
+        byCustomer[cid].push(n);
+      });
+
+      const clientsWithDevices = clientsArr.map((c: any) => ({
+        ...c,
+        devices: byCustomer[c.id] || [],
+        deviceCount: (byCustomer[c.id] || []).length,
+      }));
+      setClients(clientsWithDevices);
       setZones(Array.isArray(zoneData) ? zoneData : []);
     } catch (error) {
       console.error("Failed to fetch clients or hierarchy:", error);
@@ -51,6 +75,34 @@ const AdminCustomers = () => {
       email.includes(search.toLowerCase())
     );
   });
+
+  const handleEditClick = (e: React.MouseEvent, client: any) => {
+    e.stopPropagation();
+    setEditingCustomer(client);
+    setShowAddModal(true);
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, client: any) => {
+    e.stopPropagation();
+    setCustomerToDelete(client);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!customerToDelete) return;
+    setIsDeleting(true);
+    try {
+      await adminService.deleteCustomer(customerToDelete.id);
+      showToast("Customer deleted successfully", "success");
+      fetchClients();
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete customer", "error");
+    } finally {
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+      setCustomerToDelete(null);
+    }
+  };
 
 
   if (loading || authLoading) {
@@ -158,9 +210,20 @@ const AdminCustomers = () => {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <button className="text-[12px] font-[600] customer-btn border border-current/20 bg-[rgba(58,122,254,0.1)] px-3 py-1.5 rounded-[8px] hover:bg-[rgba(58,122,254,0.15)] hover:shadow-md transition-all shadow-sm">
-                      Manage Profile
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={(e) => handleEditClick(e, client)}
+                        className="flex items-center gap-1.5 text-[12px] font-[600] text-blue-600 border border-blue-200 bg-blue-50 px-3 py-1.5 rounded-[8px] hover:bg-blue-100 transition-all shadow-sm"
+                      >
+                        <Edit2 size={14} /> Edit
+                      </button>
+                      <button 
+                        onClick={(e) => handleDeleteClick(e, client)}
+                        className="flex items-center gap-1.5 text-[12px] font-[600] text-red-600 border border-red-200 bg-red-50 px-3 py-1.5 rounded-[8px] hover:bg-red-100 transition-all shadow-sm"
+                      >
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -181,16 +244,58 @@ const AdminCustomers = () => {
 
       <Modal
         isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        title="Add New Customer"
+        onClose={() => {
+          setShowAddModal(false);
+          setEditingCustomer(null);
+        }}
+        title={editingCustomer ? "Edit Customer Profile" : "Add New Customer"}
       >
         <AddCustomerForm
+          initialData={editingCustomer}
           onSubmit={() => {
             setShowAddModal(false);
+            setEditingCustomer(null);
             fetchClients();
           }}
-          onCancel={() => setShowAddModal(false)}
+          onCancel={() => {
+            setShowAddModal(false);
+            setEditingCustomer(null);
+          }}
         />
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        isOpen={showDeleteConfirm}
+        onClose={() => !isDeleting && setShowDeleteConfirm(false)}
+        title="Confirm Deletion"
+      >
+        <div className="p-6 text-center">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600">
+            <AlertTriangle size={32} />
+          </div>
+          <h3 className="text-xl font-bold text-slate-800 mb-2">Are you sure?</h3>
+          <p className="text-slate-600 mb-8">
+            You are about to delete <span className="font-bold text-slate-900">{customerToDelete?.display_name || customerToDelete?.full_name}</span>. 
+            This action cannot be undone and will permanently remove the user from the system.
+          </p>
+          <div className="flex gap-3">
+            <button
+              disabled={isDeleting}
+              onClick={() => setShowDeleteConfirm(false)}
+              className="flex-1 px-6 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-all disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={isDeleting}
+              onClick={confirmDelete}
+              className="flex-1 px-6 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all disabled:opacity-50 shadow-lg shadow-red-500/20"
+            >
+              {isDeleting ? "Deleting..." : "Yes, Delete Customer"}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

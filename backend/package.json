@@ -7,20 +7,21 @@
     "test": "jest --detectOpenHandles --forceExit",
     "test:cov": "jest --coverage",
     "test:e2e": "firebase emulators:exec --only firestore \"npx jest\"",
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "dev": "nodemon --config nodemon.json src/bootstrap.js",
+    "start": "node src/bootstrap.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.679.0",
     "@sentry/node": "^10.42.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.13.6",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
-    "express": "^5.2.1",
+    "express": "^4.22.1",
     "express-rate-limit": "^8.3.1",
     "firebase-admin": "^13.7.0",
     "helmet": "^8.1.0",
@@ -31,8 +32,8 @@
     "pino": "^9.4.0",
     "pino-http": "^10.3.0",
     "pino-pretty": "^10.3.1",
+    "rate-limit-redis": "^4.3.1",
     "socket.io": "^4.8.3",
-    "winston": "^3.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -46,4 +47,3 @@
     "gaxios": "^7.1.1"
   }
 }
-

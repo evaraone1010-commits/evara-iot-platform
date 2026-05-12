@@ -3,19 +3,50 @@ import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
 import { MapPin } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
-import { computeDeviceStatus } from '../../services/DeviceService';
+import { computeTdsDeviceStatus, normalizeStatus } from '../../utils/tdsStatus';
+import { getDeviceAnalyticsRoute } from '../../utils/deviceRouting';
+
+type TdsTelemetry = {
+    timestamp?: string | null;
+    lastUpdatedAt?: string | null;
+    last_updated_at?: string | null;
+    last_seen?: string | null;
+    status?: string | null;
+    connection_status?: string | null;
+    tds_value?: number | null;
+    tdsValue?: number | null;
+    water_quality?: string | null;
+    waterQualityRating?: string | null;
+    water_quality_rating?: string | null;
+    tdsHistory?: Array<number | { value?: number | null; tds_value?: number | null }>;
+    tds_history?: Array<number | { value?: number | null; tds_value?: number | null }>;
+};
+
+type TdsNode = {
+    id?: string;
+    hardwareId?: string;
+    last_seen?: string | null;
+    status?: string | null;
+    connection_status?: string | null;
+    last_telemetry?: TdsTelemetry;
+    label?: string;
+    displayName?: string;
+    location_name?: string;
+    location?: string;
+};
 
 interface TDSCardProps {
-    node: any;
-    realtimeStatus?: any;
+    node: TdsNode;
+    realtimeStatus?: TdsTelemetry;
 }
 
 const TDSCard = ({ node, realtimeStatus }: TDSCardProps) => {
     const data = realtimeStatus || node.last_telemetry || {};
-const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
+    const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
     const waterQuality = data.water_quality ?? data.waterQualityRating ?? data.water_quality_rating ?? "Unknown";
+    const explicitStatus = normalizeStatus(data.status || data.connection_status || node.status || node.connection_status);
     const lastSeen = data.timestamp || data.lastUpdatedAt || data.last_updated_at || data.last_seen || node.last_seen || null;
-    const isOnline = computeDeviceStatus(lastSeen) === "Online";
+    const isOnline = explicitStatus ? explicitStatus === 'Online' : computeTdsDeviceStatus(lastSeen) === "Online";
 
     // History for sparkline
     let historyData = (data.tdsHistory || data.tds_history || []);
@@ -25,11 +56,10 @@ const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
         historyData = Array(10).fill(tdsValue);
     }
 
-    const history = historyData.map((h: any, i: number) => {
+    const history = historyData.map((h, i) => {
         const baseValue = typeof h === 'object' ? (h.value ?? h.tds_value ?? 0) : h;
-        // Add a tiny bit of "up and down" noise if the user wants it to look alive
-        // This is purely for aesthetics as requested
-        const noise = (Math.sin(i * 1.5) * 0.5) + (Math.random() * 0.2);
+        // Deterministic tiny wave so the sparkline stays stable between renders.
+        const noise = Math.sin(i * 1.5) * 0.5 + (i % 3) * 0.06;
         return {
             index: i,
             value: baseValue + noise
@@ -37,13 +67,13 @@ const tdsValue = data.tds_value ?? data.tdsValue ?? 0;
     });
 return (
         <Link
-            to={`/evaratds/${node.hardwareId || node.id}`}
+            to={getDeviceAnalyticsRoute(node as any)}
             className={clsx(
-                "group rounded-[24px] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden flex flex-col relative mx-auto w-full border apple-glass-card",
+                "group rounded-[24px] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden flex flex-col relative mx-auto w-full min-w-0 border apple-glass-card",
 isOnline ? "bg-white/40 dark:bg-white/5 border-white/20" : "bg-slate-500/5 border-slate-500/10"
             )}
         >
-            <div className="p-5 flex flex-col flex-1 relative z-10 w-full gap-[18px] min-h-[160px]">
+            <div className="p-5 flex flex-col flex-1 relative z-10 w-full min-w-0 gap-[18px] min-h-[160px]">
                 {/* Header */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -82,8 +112,8 @@ EvaraTDS
                     </div>
 
                     {/* Compact Sparkline - Clean layout with blue waves */}
-                    <div className="h-10 w-full relative">
-                        <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-[40px] w-full min-w-0 relative">
+                        <ResponsiveContainer width="100%" height={40} minWidth={0} minHeight={40}>
                             <AreaChart data={history}>
 <defs>
                                     <linearGradient id="colorTds" x1="0" y1="0" x2="0" y2="1">

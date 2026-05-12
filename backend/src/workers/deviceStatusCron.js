@@ -1,7 +1,9 @@
-const { db } = require("../config/firebase.js");
+const { db, admin } = require("../config/firebase.js");
 const logger = require("../utils/logger.js"); // ✅ AUDIT FIX M10
 const deviceState = require("../services/deviceStateService.js");
 const cache = require("../config/cache.js");
+
+const CHUNK_SIZE = 200;
 
 /**
  * deviceStatusCron.js
@@ -23,24 +25,33 @@ const CRON_LOCK_KEY = "cron:device-status-sweep";
 let statusCronTimer = null;
 let sweepInProgress = false;
 
-function chunkArray(items, size) {
-  const chunks = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
-}
+/**
+ * Async generator — yields CHUNK_SIZE devices at a time from registry
+ * Uses cursor-based pagination for stable sweeps
+ */
+async function* getActiveDevicesInChunks() {
+  let lastDoc = null;
+  while (true) {
+    try {
+      let query = db.collection('devices')
+        .where('status', 'not-in', ['OFFLINE_STOPPED', 'DECOMMISSIONED'])
+        .orderBy('status', 'asc')
+        .orderBy('device_id', 'asc')
+        .limit(CHUNK_SIZE);
 
-async function commitUpdateOps(updateOps) {
-  if (!updateOps.length) return;
+      if (lastDoc) query = query.startAfter(lastDoc);
 
-  const chunks = chunkArray(updateOps, FIRESTORE_BATCH_LIMIT);
-  for (const opsChunk of chunks) {
-    const batch = db.batch();
-    for (const op of opsChunk) {
-      batch.update(op.ref, op.data);
+      const snap = await query.get();
+      if (snap.empty) break;
+
+      yield snap.docs;
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      if (snap.docs.length < CHUNK_SIZE) break; // last page
+    } catch (err) {
+      logger.error('[DeviceStatusCron] Generator fetch failed', { error: err.message });
+      break;
     }
-    await batch.commit();
   }
 }
 
@@ -53,11 +64,11 @@ async function tryAcquireCronLock() {
     const acquired = await cache.redis.set(CRON_LOCK_KEY, lockValue, "EX", lockTtlSec, "NX");
     return acquired === "OK";
   } catch (err) {
-    logger.warn("[DeviceStatusCron] Failed to acquire distributed lock; running sweep to avoid stalling", {
+    logger.error("[DeviceStatusCron] Failed to acquire distributed lock; failing closed to prevent duplicate sweeps", {
       category: "cron",
       error: err.message
     });
-    return true;
+    return false;
   }
 }
 
@@ -76,136 +87,102 @@ async function recalculateAllDevicesStatus() {
   }
 
   try {
-    logger.info('Starting status recalculation sweep', { category: 'cron' });
-    
-    // ✅ AUDIT FIX M1: Only fetch devices that are NOT permanently offline
-    // Devices with status OFFLINE_STOPPED or DECOMMISSIONED don't need re-checking.
-    // This reduces Firestore reads by ~40-80% depending on fleet health.
-    const devicesSnapshot = await db.collection("devices")
-      .where("status", "not-in", ["OFFLINE_STOPPED", "DECOMMISSIONED"])
-      .get();
+    logger.info('Starting distributed status recalculation sweep', { category: 'cron' });
+    let totalProcessed = 0;
+    let totalChanges = 0;
     const now = new Date();
-    const updates = [];
-    let statusChanges = 0;
 
-    // Group by device_type to fetch metadata efficiently
-    const typedGroups = {};
-    const registryMap = {};
-    for (const doc of devicesSnapshot.docs) {
-        const data = doc.data();
-        const type = data.device_type;
-        if (type) {
-            if (!typedGroups[type]) typedGroups[type] = [];
-            typedGroups[type].push(doc.id);
-            registryMap[doc.id] = data;
-        }
-    }
-
-    const allTypeItems = [];
-    for (const type of Object.keys(typedGroups)) {
-      const ids = typedGroups[type];
-      const idChunks = chunkArray(ids, 200);
-      for (const idsChunk of idChunks) {
-        const refs = idsChunk.map(id => db.collection(type.toLowerCase()).doc(id));
-        const metas = await db.getAll(...refs);
-        for (const m of metas) {
-          if (m.exists) {
-            allTypeItems.push({ id: m.id, type, meta: m.data() });
-          }
-        }
-      }
-    }
-
-    for (const item of allTypeItems) {
-        const { id: deviceId, type, meta } = item;
-        const registry = registryMap[deviceId];
+    for await (const chunkDocs of getActiveDevicesInChunks()) {
+        const batch = db.batch();
+        const registryMap = {};
+        const typedGroups = {};
         
-        // ✅ FIX #20: CORRECT STATUS CALCULATION FOR CRON
-        // CRITICAL: Never use telemetry_snapshot.timestamp - it's stale
-        // Only use actual telemetry update timestamps (never get cleaned up)
-        // Priority (from most reliable to least):
-        // 1. last_updated_at (set when telemetry arrives)
-        // 2. last_online_at (set when device comes online)
-        // 3. last_seen (legacy field)
-        const lastUpdatedAt = 
-          meta.last_updated_at ||          // Primary: actual telemetry timestamp
-          meta.last_online_at ||          // Secondary: device online timestamp  
-          meta.last_seen ||                // Tertiary: legacy last seen
-          meta.lastUpdatedAt;              // Fallback: alternative naming
-        
-        const currentStatus = meta.status || "OFFLINE";
-
-        if (!lastUpdatedAt) {
-          // No timestamp at all - mark as OFFLINE
-          if (currentStatus !== 'OFFLINE') {
-            updates.push({
-              ref: db.collection(type.toLowerCase()).doc(deviceId),
-              data: { status: 'OFFLINE' }
-            });
-            statusChanges++;
-          }
-          continue;
-        }
-        
-        // Use centralized status calculation
-        const desiredStatus = deviceState.calculateDeviceStatus(lastUpdatedAt);
-        
-        // Only update if status changed (reduce DB writes)
-        if (currentStatus !== desiredStatus) {
-          updates.push({
-            ref: db.collection(type.toLowerCase()).doc(deviceId),
-            data: {
-              status: desiredStatus,
-              statusLastChecked: now.toISOString()
+        // 1. Group chunk by device type for metadata fetch
+        for (const doc of chunkDocs) {
+            const data = doc.data();
+            const type = data.device_type;
+            if (type) {
+                if (!typedGroups[type]) typedGroups[type] = [];
+                typedGroups[type].push(doc.id);
+                registryMap[doc.id] = data;
             }
-          });
-          
-          // ✅ FIX #21: Also update registry status so it stays in sync
-          if (registry) {
-            updates.push({
-              ref: db.collection('devices').doc(deviceId),
-              data: {
-                status: desiredStatus,
-                statusLastChecked: now.toISOString()
-              }
-            });
-          }
-          
-          statusChanges++;
-          logger.info(`Device status changed: ${deviceId}`, { category: 'cron', deviceId, from: currentStatus, to: desiredStatus });
-          
-          // ✅ FIX #22: BROADCAST STATUS CHANGE VIA SOCKET.IO
-          // Notify all users of this customer that a device status changed
-          const customerId = registry?.customer_id || registry?.customerId || meta.customer_id || meta.customerId;
-          if (customerId && global.io) {
-            const statusEvent = {
-              deviceId,
-              oldStatus: currentStatus,
-              newStatus: desiredStatus,
-              lastUpdated: lastUpdatedAt,
-              timestamp: now.toISOString()
-            };
-            global.io.to(`customer:${customerId}`).emit('device:status-changed', statusEvent);
-            logger.info(`Socket event emitted: device:status-changed for ${deviceId}`, { 
-              category: 'cron', 
-              deviceId, 
-              customerId,
-              oldStatus: currentStatus,
-              newStatus: desiredStatus
-            });
-          } else if (!customerId) {
-            logger.warn(`No customer_id found for device ${deviceId}, status change not broadcast`, { category: 'cron', deviceId });
-          }
         }
-      }
-    
-    if (updates.length > 0) {
-      await commitUpdateOps(updates);
-      logger.info(`Status sweep complete`, { category: 'cron', changes: statusChanges, total: devicesSnapshot.size });
-    } else {
-      logger.info('Status sweep complete: no changes needed', { category: 'cron' });
+
+        // 2. Fetch metadata for this chunk concurrently
+        const allTypeItems = [];
+        const typeBatches = await Promise.all(
+            Object.keys(typedGroups).map(async (type) => {
+                const ids = typedGroups[type];
+                const refs = ids.map(id => db.collection(type.toLowerCase()).doc(id));
+                const metas = await db.getAll(...refs);
+                return metas
+                    .filter(m => m.exists)
+                    .map(m => ({ id: m.id, type, meta: m.data() }));
+            })
+        );
+        
+        typeBatches.forEach(batch => allTypeItems.push(...batch));
+
+        // 3. Recalculate status and queue updates
+        let chunkChanges = 0;
+        for (const item of allTypeItems) {
+            const { id: deviceId, type, meta } = item;
+            const registry = registryMap[deviceId];
+            
+            const lastUpdatedAt = 
+              meta.last_updated_at ||
+              meta.last_online_at ||
+              meta.last_seen ||
+              meta.lastUpdatedAt;
+            
+            const currentStatus = meta.status || "OFFLINE";
+            const desiredStatus = !lastUpdatedAt 
+              ? 'OFFLINE' 
+              : deviceState.calculateDeviceStatus(lastUpdatedAt);
+            
+            if (currentStatus !== desiredStatus) {
+              const statusData = {
+                status: desiredStatus,
+                statusLastChecked: admin.firestore.FieldValue.serverTimestamp()
+              };
+
+              // Update Metadata Doc
+              batch.update(db.collection(type.toLowerCase()).doc(deviceId), statusData);
+              
+              // Update Registry Doc
+              if (registry) {
+                batch.update(db.collection('devices').doc(deviceId), statusData);
+              }
+              
+              chunkChanges++;
+              totalChanges++;
+
+              // Broadcast via Socket.io
+              const customerId = registry?.customer_id || registry?.customerId || meta.customer_id || meta.customerId;
+              if (customerId && global.io) {
+                global.io.to(`customer:${customerId}`).emit('device:status-changed', {
+                  deviceId,
+                  oldStatus: currentStatus,
+                  newStatus: desiredStatus,
+                  lastUpdated: lastUpdatedAt,
+                  timestamp: now.toISOString()
+                });
+              }
+            }
+        }
+
+        if (chunkChanges > 0) {
+          await batch.commit();
+        }
+
+        totalProcessed += chunkDocs.length;
+        logger.debug(`[DeviceStatusCron] Processed chunk of ${chunkDocs.length} devices (${chunkChanges} changes)`);
+
+        // Yield control to event loop
+        await new Promise(resolve => setImmediate(resolve));
     }
-    
+
+    logger.info(`Status sweep complete`, { category: 'cron', totalProcessed, totalChanges });
   } catch (err) {
     logger.error('DeviceStatusCron critical error', err, { category: 'cron' });
     throw err;
@@ -237,6 +214,9 @@ function startStatusCron() {
       logger.error('[DeviceStatusCron] Status sweep cycle failed', { error: err.message, category: 'cron' });
     }
   }, STATUS_CHECK_INTERVAL);
+
+  // ✅ .unref() lets Node.js exit cleanly during AWS ECS task termination
+  statusCronTimer.unref();
 
   return statusCronTimer;
 }

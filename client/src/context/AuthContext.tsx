@@ -38,8 +38,8 @@ import {
   updateProfile,
 } from "firebase/auth";
 import type { User as FirebaseUser } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
+import { auth } from "../lib/firebase";
+import logger from "../utils/logger";
 
 export type UserRole = "superadmin" | "community_admin" | "customer";
 export type UserPlan = "free" | "pro" | "enterprise";
@@ -62,14 +62,45 @@ interface AuthContextType {
   login: (
     email: string,
     password: string,
+    requestedRole?: string,
   ) => Promise<{ success: boolean; user?: User; error?: string }>;
   signup: (
     email: string,
     password: string,
     displayName: string,
+    profile?: {
+      full_name?: string;
+      phone_number?: string;
+      zone_id?: string | null;
+      community_id?: string | null;
+      status?: string;
+    },
   ) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
 }
+
+const mapFirebaseAuthError = (error: any): string => {
+  const code = error?.code as string | undefined;
+
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "This email is already registered. Please sign in or use a different email.";
+    case "auth/invalid-email":
+      return "Please enter a valid email address.";
+    case "auth/weak-password":
+      return "Password is too weak. Use at least 6 characters.";
+    case "auth/operation-not-allowed":
+      return "Email/Password signup is disabled in Firebase Authentication settings.";
+    case "auth/network-request-failed":
+      return "Network error while contacting Firebase. Check your internet and try again.";
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+    case "auth/invalid-credential":
+      return "Invalid email or password.";
+    default:
+      return error?.message || "Authentication failed. Please try again.";
+  }
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -102,7 +133,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const fetchProfile = useCallback(
     async (firebaseUser: FirebaseUser) => {
       try {
-        console.log("[AuthContext] Starting profile fetch for:", firebaseUser.email);
+        logger.log("[AuthContext] Starting profile fetch for:", firebaseUser.email);
         
         // Get ID token
         const idToken = await firebaseUser.getIdToken();
@@ -117,7 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         });
 
         if (!response.ok) {
-          console.error("[AuthContext] Failed to fetch profile:", response.status, response.statusText);
+          logger.error("[AuthContext] Failed to fetch profile:", response.status, response.statusText);
           setUser(null);
           setLoading(false);
           return;
@@ -126,14 +157,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const data = await response.json();
         
         if (data.success && data.user) {
-          console.log(`[AuthContext] ✅ Profile fetched - role: ${data.user.role}`);
+          logger.log(`[AuthContext] ✅ Profile fetched - role: ${data.user.role}`);
           setUser(extractUser(data.user));
         } else {
-          console.error("[AuthContext] Invalid response from backend:", data);
+          logger.error("[AuthContext] Invalid response from backend:", data);
           setUser(null);
         }
       } catch (err) {
-        console.error("[AuthContext] Error fetching profile:", err);
+        logger.error("[AuthContext] Error fetching profile:", err);
         setUser(null);
       } finally {
         setLoading(false);
@@ -148,9 +179,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       async (firebaseUser: FirebaseUser | null) => {
         if (firebaseUser) {
           await fetchProfile(firebaseUser);
+          
+          // Connect socket now that user is authenticated
+          import("../services/api").then(({ socket }) => {
+            if (!socket.connected) socket.connect();
+          });
         } else {
           setUser(null);
           setLoading(false);
+          
+          // Disconnect socket when logged out
+          import("../services/api").then(({ socket }) => {
+            if (socket.connected) socket.disconnect();
+          });
         }
       },
     );
@@ -162,6 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     async (
       email: string,
       password: string,
+      requestedRole?: string,
     ): Promise<{ success: boolean; user?: User; error?: string }> => {
       setLoading(true);
       try {
@@ -177,13 +219,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           return { success: false, error: "Login failed" };
         }
 
-        // Step 2: Get a FRESH ID token (forceRefresh=true avoids sending a
-        //         cached token that the backend might not have indexed yet)
+        // Step 2: Get a FRESH ID token
         const idToken = await credential.user.getIdToken(true);
 
         // Step 3: Verify token with backend and get profile.
-        // Retried up to 3 times with backoff to handle transient network hiccups.
-        console.log("[AuthContext] Verifying token with backend...");
+        logger.log("[AuthContext] Verifying token with backend...");
         let response: Response;
         let data: any;
         try {
@@ -191,7 +231,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             const res = await fetch("/api/v1/auth/verify-token", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ idToken }),
+              body: JSON.stringify({ idToken, requestedRole }),
             });
             const json = await res.json();
             return { response: res, data: json };
@@ -199,34 +239,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           response = result.response;
           data = result.data;
         } catch (fetchErr: any) {
-          console.error("[AuthContext] Backend unreachable after retries:", fetchErr);
+          logger.error("[AuthContext] Backend unreachable after retries:", fetchErr);
           setLoading(false);
           return { success: false, error: "Cannot reach server. Please check your connection." };
         }
 
         if (!response.ok) {
-          console.error("[AuthContext] Token verification failed:", response.status, data);
+          logger.error("[AuthContext] Token verification failed:", response.status, data);
           setLoading(false);
+          
+          // If role mismatch, we must sign out from Firebase too, otherwise the user
+          // stays authenticated in Firebase but doesn't have a profile in our app state.
+          if (response.status === 403) {
+            await signOut(auth);
+          }
+          
           return { success: false, error: data?.error ?? "Token verification failed" };
         }
 
         if (data.success && data.user) {
           const finalUser = extractUser(data.user);
-          console.log(`[AuthContext] ✅ Login successful - role: ${finalUser.role}`);
+          logger.log(`[AuthContext] ✅ Login successful - role: ${finalUser.role}`);
           setUser(finalUser);
           setLoading(false);
           return { success: true, user: finalUser };
         }
 
-        console.error("[AuthContext] Invalid response from backend:", data);
+        logger.error("[AuthContext] Invalid response from backend:", data);
         setLoading(false);
         return { success: false, error: "Invalid response from server" };
       } catch (err: any) {
-        console.error("[AuthContext] Login error:", err);
+        logger.error("[AuthContext] Login error:", err);
         setLoading(false);
         return {
           success: false,
-          error: err.message || "Login failed",
+          error: mapFirebaseAuthError(err),
         };
       }
     },
@@ -238,6 +285,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       email: string,
       password: string,
       displayName: string,
+      profile?: {
+        full_name?: string;
+        phone_number?: string;
+        zone_id?: string | null;
+        community_id?: string | null;
+        status?: string;
+      },
     ): Promise<{ success: boolean; error?: string }> => {
       try {
         const credential = await createUserWithEmailAndPassword(
@@ -250,15 +304,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           // Set display name in Firebase Auth
           await updateProfile(credential.user, { displayName });
 
-          // Create profile in Firestore
-          const profile = {
-            full_name: displayName,
-            role: "customer",
-            plan: "pro",
-            created_at: new Date().toISOString(),
-          };
+          // Trigger backend verification/provisioning path so server creates/normalizes
+          // customer profile even when Firestore rules block client writes.
+          const idToken = await credential.user.getIdToken(true);
+          const verifyResponse = await fetch("/api/v1/auth/verify-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              idToken,
+              profile: {
+                display_name: displayName,
+                full_name: profile?.full_name || displayName,
+                phone_number: profile?.phone_number || "",
+                zone_id: profile?.zone_id || null,
+                community_id: profile?.community_id || null,
+                status: profile?.status || "active",
+              },
+            }),
+          });
 
-          await setDoc(doc(db, "customers", credential.user.uid), profile);
+          if (!verifyResponse.ok) {
+            const verifyData = await verifyResponse.json().catch(() => ({}));
+            return {
+              success: false,
+              error: verifyData?.error || "Signup succeeded but profile setup failed",
+            };
+          }
 
           await fetchProfile(credential.user);
           return { success: true };
@@ -268,7 +339,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       } catch (err: any) {
         return {
           success: false,
-          error: err.message || "Signup failed",
+          error: mapFirebaseAuthError(err),
         };
       }
     },
@@ -276,6 +347,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const logout = useCallback(async (): Promise<void> => {
+    try {
+      // ✅ AUDIT FIX: Clear smart token cache on logout
+      const { clearTokenCache } = await import("../services/api");
+      clearTokenCache();
+    } catch (err) {
+      logger.error("[AuthContext] Failed to clear token cache:", err);
+    }
+
     await signOut(auth);
     setUser(null);
   }, []);

@@ -44,6 +44,8 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
     const [rangeEnd, setRangeEnd] = useState<string>('');
     const [isHovered, setIsHovered] = useState(false);
 
+
+
     const chartData = useMemo(() => {
         if (history.length === 0) {
             return [];
@@ -52,7 +54,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
         if (period === '1H') {
               const now = new Date();
               const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-              let sorted = [...history].map((d) => ({
+              const sorted = [...history].map((d) => ({
                   ...d,
                   timestampMs: new Date(d.date!).getTime(),
                   current: d.value || 0
@@ -87,7 +89,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
               }
               return interpolated;
           } else if (period === '24H') {
-            let sorted = [...history].map((d) => ({
+            const sorted = [...history].map((d) => ({
                 ...d,
                 timestampMs: new Date(d.date!).getTime(),
                 current: d.value || 0
@@ -106,7 +108,7 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
                      dataIdx++;
                  }
                  
-                 let point = { 
+                 const point = { 
                      timestampMs: t, 
                      label: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), 
                      fullTime: new Date(t).toLocaleString(),
@@ -205,21 +207,10 @@ const ConsumptionPatternCard = ({ history }: { history: { date?: Date, time: str
         return [];
     }, [history, period, rangeStart, rangeEnd]);
 
-    const activeLabel = chartData[Math.floor(chartData.length / 2)]?.label || '--:--';
-
     const peakUsage = useMemo(() => {
         if (chartData.length === 0) return 0;
         return Math.max(...chartData.map(d => d.current || 0));
     }, [chartData]);
-
-    const CustomXAxisTick = ({ x, y, payload }: any) => {
-        const isActive = payload.value === activeLabel;
-        return (
-            <text x={x} y={y + 15} textAnchor="middle" fill={isActive ? 'var(--text-primary)' : 'var(--text-muted)'} fontSize={11} fontWeight={600}>
-                {payload.value}
-            </text>
-        );
-    };
 
     const CustomYAxisTick = ({ x, y, payload }: any) => {
         return (
@@ -481,7 +472,7 @@ const TotalFlowRateCard = ({ history, flowRate, maxFlowRate, className = "" }: {
         }
 
         return filtered.reduce((sum, item) => sum + item.value, 0);
-    }, [history, period]);
+    }, [history, period, startDate, endDate]);
 
     return (
         <div className={`apple-glass-card rounded-[2rem] p-4 flex flex-col relative overflow-hidden h-full ${className}`}>
@@ -612,12 +603,9 @@ const EvaraFlowAnalytics = () => {
 
     // ── Auto-fetch data when device is selected ────────────────────────────────
     useEffect(() => {
-        if (hardwareId) {
-            // Immediately fetch fresh data from ThingSpeak when device is selected
-            refetch();
-        }
+        // Redundant refetch removed. React Query handles initial fetch on mount.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hardwareId]); // IMPORTANT: Only depend on hardwareId, NOT refetch
+    }, [hardwareId]);
 
     const deviceConfig = ('config' in (unifiedData?.config ?? {})
         ? (unifiedData!.config as any).config
@@ -688,7 +676,7 @@ const EvaraFlowAnalytics = () => {
     // ── Firestore Real-time Subscription (replaces direct ThingSpeak fetch) ──
     // The backend TelemetryWorker polls ThingSpeak every 60s, processes the data,
     // and writes to Firestore. We subscribe to that document for live updates.
-    const deviceDocId = deviceInfo?.id || hardwareId;
+    const deviceDocId = deviceInfo?.id; // Priority: UUID from backend, wait for it if null
     const deviceType = deviceConfig?.device_type || (unifiedData as any)?.config?.config?.device_type || 'flow_meter';
     const firestoreFlow = useFirestoreFlowData(deviceDocId, deviceType);
 
@@ -703,23 +691,51 @@ const EvaraFlowAnalytics = () => {
     // This is used by the delta calculations and charts below
     const tsFeeds = useMemo(() => {
         if (!historyFeeds || historyFeeds.length === 0) return [];
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
         return historyFeeds.map((f: any) => {
-            const utcTime = new Date(f.timestamp || f.created_at).getTime();
-            const istTime = new Date(utcTime + (5.5 * 60 * 60 * 1000));
+            const utcDate = resolveDate(f.timestamp || f.created_at);
+            if (utcDate.getTime() === 0) return null;
+            const istTime = new Date(utcDate.getTime() + (5.5 * 60 * 60 * 1000));
             const reading = f.total_liters ?? (f.raw?.[fieldTotal] ? parseFloat(f.raw[fieldTotal]) : null);
             const flowReading = f.flow_rate ?? (f.raw?.[fieldFlow] ? parseFloat(f.raw[fieldFlow]) : null);
             return { ...f, istTime, reading, flowReading };
-        }).filter((f: any) => (f.reading != null && !isNaN(f.reading)) || (f.flowReading != null && !isNaN(f.flowReading)));
+        })
+        .filter((f: any) => f !== null && ((f.reading != null && !isNaN(f.reading)) || (f.flowReading != null && !isNaN(f.flowReading))))
+        .sort((a: any, b: any) => a.istTime.getTime() - b.istTime.getTime());
     }, [historyFeeds, fieldTotal, fieldFlow]);
 
     // Derived Offline Logic
     const { isTSOffline, tsIstLabel, tsDurationLabel } = useMemo(() => {
         if (!tsCreatedAt) return { isTSOffline: false, tsIstLabel: '', tsDurationLabel: '' };
 
-        const lastSeenDate = new Date(tsCreatedAt);
+        // Helper to resolve timestamp (handles Firestore objects)
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
+        const lastSeenDate = resolveDate(tsCreatedAt);
+        if (lastSeenDate.getTime() === 0) return { isTSOffline: false, tsIstLabel: '', tsDurationLabel: '' };
+
         const now = new Date();
         const diffMs = now.getTime() - lastSeenDate.getTime();
         const diffMin = diffMs / 60000;
+        
+        // 30 minutes threshold for "Offline" status
         const offline = diffMin > 30;
 
         // IST Formatting (21 Mar 2026, 14:44 IST)
@@ -732,13 +748,25 @@ const EvaraFlowAnalytics = () => {
             hour12: false,
             timeZone: 'Asia/Kolkata'
         };
-        const istLabel = new Intl.DateTimeFormat('en-IN', formatOptions).format(lastSeenDate).replace(',', '') + ' IST';
 
-        // Duration Formatting
+        let istLabel = '';
+        try {
+            istLabel = new Intl.DateTimeFormat('en-IN', formatOptions).format(lastSeenDate).replace(',', '') + ' IST';
+        } catch (e) {
+            istLabel = 'Unknown Date';
+        }
+
+        // Duration Formatting (Smart Logic from TDS)
         const hoursAgo = Math.floor(diffMin / 60);
-        const durationLabel = hoursAgo > 0
-            ? `Device offline · Last seen ${hoursAgo} hours ago`
-            : `Device offline · Last seen ${Math.floor(diffMin)} minutes ago`;
+        let durationLabel = '';
+        
+        if (hoursAgo >= 24) {
+            durationLabel = `Device is offline more than 24 hrs · Last seen ${istLabel}`;
+        } else if (hoursAgo > 0) {
+            durationLabel = `Device offline · Last seen ${hoursAgo} ${hoursAgo === 1 ? 'hour' : 'hours'} ago`;
+        } else {
+            durationLabel = `Device offline · Last seen ${Math.floor(diffMin)} ${Math.floor(diffMin) === 1 ? 'minute' : 'minutes'} ago`;
+        }
 
         return { isTSOffline: offline, tsIstLabel: istLabel, tsDurationLabel: durationLabel };
     }, [tsCreatedAt]);
@@ -801,22 +829,40 @@ const EvaraFlowAnalytics = () => {
 
     // Flow history (for charts)
     const flowHistory = useMemo(() => {
+        const resolveDate = (ts: any): Date => {
+            if (!ts) return new Date(0);
+            if (typeof ts === 'object') {
+                if ('_seconds' in ts) return new Date(ts._seconds * 1000);
+                if ('seconds' in ts) return new Date(ts.seconds * 1000);
+            }
+            const d = new Date(ts);
+            return isNaN(d.getTime()) ? new Date(0) : d;
+        };
+
         const items = historyFeeds.map((f: any) => {
-            const d = new Date(f.timestamp || f.created_at);
+            const d = resolveDate(f.timestamp || f.created_at);
+            if (d.getTime() === 0) return null;
             const time = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-            const rawFlow = f.flow_rate ?? parseFloat(f.raw?.[fieldFlow] as string) ?? 0;
-            return { date: d, time, value: Math.max(0, rawFlow) };
-        });
-        if (telemetryData) {
+            const rawFlow = f.flow_rate ?? parseFloat(f.raw?.[fieldFlow] as string);
+            return { date: d, time, value: isNaN(rawFlow) ? 0 : Math.max(0, rawFlow) };
+        }).filter((item: any) => item !== null);
+
+        // Sort by date to prevent "straight line" backtracking artifacts
+        items.sort((a: any, b: any) => a.date.getTime() - b.date.getTime());
+
+        if (telemetryData && !effectiveIsOffline) {
             const now = new Date();
-            items.push({
-                date: now,
-                time: `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`,
-                value: Math.max(0, flowRate)
-            });
+            // Only append if 'now' is actually after the last history point
+            if (items.length === 0 || now.getTime() > items[items.length - 1].date.getTime()) {
+                items.push({
+                    date: now,
+                    time: `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`,
+                    value: Math.max(0, flowRate)
+                });
+            }
         }
         return items;
-    }, [historyFeeds, fieldFlow, telemetryData, flowRate]);
+    }, [historyFeeds, fieldFlow, telemetryData, flowRate, effectiveIsOffline]);
 
     // ── Delta Water Reading calculations ──────────────────────────────────────
     const meterHistory = useMemo(() => {
@@ -835,7 +881,12 @@ const EvaraFlowAnalytics = () => {
             .filter((e: { ts: number; reading: number }) => !isNaN(e.reading));
     }, [historyFeeds, fieldTotal]);
 
-    const { deltaVolumeLitres, avgFlowLperMin } = useMemo(() => {
+    const { deltaVolumeLitres } = useMemo(() => {
+        // Safety: If still loading initial history, return null to show "Fetching" state in UI
+        if (analyticsLoading && meterHistory.length === 0) {
+            return { deltaVolumeLitres: null };
+        }
+
         if (effectiveIsOffline) {
             if (tsFeeds.length >= 2) {
                 const newest = tsFeeds[tsFeeds.length - 1];
@@ -846,21 +897,18 @@ const EvaraFlowAnalytics = () => {
                 const deltaMin = deltaMs / 60000;
 
                 // Guards
-                if (deltaVol < 0) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-                if (deltaVol > 10000) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-                if (deltaMin <= 0) return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate };
-
-                const flowMin = deltaVol / deltaMin;
+                if (deltaVol < 0) return { deltaVolumeLitres: NaN };
+                if (deltaVol > 10000) return { deltaVolumeLitres: NaN };
+                if (deltaMin <= 0) return { deltaVolumeLitres: NaN };
 
                 return {
                     deltaVolumeLitres: deltaVol,
-                    avgFlowLperMin: flowMin,
                 };
             }
-            return { deltaVolumeLitres: 0, avgFlowLperMin: flowRate };
+            return { deltaVolumeLitres: 0 };
         }
 
-        // Live Mode (existing logic, potentially with similar improvements)
+        // Live Mode
         if (meterHistory.length >= 2) {
             const oldest = meterHistory[0];
             const newest = meterHistory[meterHistory.length - 1];
@@ -869,16 +917,15 @@ const EvaraFlowAnalytics = () => {
             const deltaMin = deltaMs / 60_000;
 
             if (deltaVol < 0 || deltaVol > 10000 || deltaMin <= 0) {
-                return { deltaVolumeLitres: NaN, avgFlowLperMin: flowRate, deltaStatusMsg: '—' };
+                return { deltaVolumeLitres: NaN, deltaStatusMsg: '-' };
             }
 
             return {
                 deltaVolumeLitres: deltaVol,
-                avgFlowLperMin: deltaMin > 0 ? deltaVol / deltaMin : flowRate,
                 deltaStatusMsg: null as string | null
             };
         }
-        return { deltaVolumeLitres: 0, avgFlowLperMin: flowRate, deltaStatusMsg: 'Insufficient history' as string | null };
+        return { deltaVolumeLitres: 0, deltaStatusMsg: 'Insufficient history' as string | null };
     }, [tsFeeds, meterHistory, flowRate, effectiveIsOffline]);
 
     // ── Usage Forecast Logic (24h Pattern) ──────────────────────────────────
@@ -958,10 +1005,6 @@ const EvaraFlowAnalytics = () => {
 
     // Internal helper for KPI display
     const formatKPI = (val: number) => formatKPIValue(val, false);
-
-    // Avg flow in L/hr — kept for potential future use
-    void (avgFlowLperMin * 60);
-    void (maxFlowRate * 60);
 
     if (!hardwareId) return <Navigate to="/nodes" replace />;
 
@@ -1352,7 +1395,7 @@ const EvaraFlowAnalytics = () => {
                                                     <span className="text-[11px] font-black uppercase tracking-widest text-[var(--text-primary)]">USAGE</span>
                                                 </div>
                                                 <span className="text-[1.3rem] lg:text-[1.5rem] font-black text-[var(--text-primary)] leading-none tabular-nums truncate">
-                                                    {formatMeterValue(deltaVolumeLitres > 0 ? deltaVolumeLitres : totalRaw)}
+                                                    {formatMeterValue(deltaVolumeLitres !== null && deltaVolumeLitres > 0 ? deltaVolumeLitres : totalRaw)}
                                                     <span className="text-[0.8rem] font-black text-[#94a3b8] ml-0.5">L</span>
                                                 </span>
                                             </div>

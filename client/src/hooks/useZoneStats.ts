@@ -29,7 +29,7 @@ export const useZoneStats = () => {
                 throw err;
             }
         },
-        staleTime: 1000 * 60 * 10, // 10 minutes
+        staleTime: 0, // Always fetch fresh data for administrative stats
         refetchInterval: 300000, // Reduced from 5s to 5m
     });
 

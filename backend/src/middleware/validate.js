@@ -23,14 +23,18 @@ const { ZodError } = require('zod');
 
 const validate = (schema) => (req, res, next) => {
   try {
-    // safeParse returns { success, data, error } — no throw
-    const result = schema.safeParse(req.body);
+    const dataToValidate = {
+      body: req.body,
+      query: req.query,
+      params: req.params,
+    };
+
+    const result = schema.safeParse(dataToValidate);
     
     if (!result.success) {
-      // Create error object with Zod errors for centralized handler
       const error = new Error('Validation failed');
       error.statusCode = 400;
-      error.details = result.error.errors.map(e => ({
+      error.details = result.error.issues.map(e => ({
         field: e.path.join('.'),
         message: e.message,
         code: e.code
@@ -38,15 +42,20 @@ const validate = (schema) => (req, res, next) => {
       return next(error);
     }
     
-    // ✅ CRITICAL: Replace req.body with clean, validated data
-    // This strips any unknown fields (due to schema.strict())
-    // and ensures backend only sees schema-defined fields
-    req.body = result.data;
+    if (result.data.body) req.body = result.data.body;
+    if (result.data.query) req.query = result.data.query;
+    if (result.data.params) req.params = result.data.params;
+    
     next();
   } catch (err) {
-    // Unexpected error — delegate to centralized handler
     next(err);
   }
 };
 
+/**
+ * Shorthand for query-only validation
+ */
+const validateQuery = (schema) => validate(require('zod').z.object({ query: schema }));
+
 module.exports = validate;
+module.exports.validateQuery = validateQuery;

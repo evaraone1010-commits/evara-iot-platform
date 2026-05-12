@@ -6,6 +6,8 @@
     "node": ">=18.0.0"
   },
   "scripts": {
+    "test": "cd backend && npm test",
+    "security:setup": "node scripts/setup-git-secrets.js",
     "install:backend": "cd backend && npm install --production",
     "install:client": "cd client && npm install",
     "build:client": "cd client && npm run build",
@@ -14,7 +16,7 @@
     "dev": "concurrently \"cd backend && npm run dev\" \"cd client && npm run dev\""
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
+    "concurrently": "^9.2.1",
     "eslint": "^8.57.1",
     "eslint-plugin-unused-imports": "^4.4.1"
   }

@@ -1,7 +1,15 @@
 {
   "indexes": [
     {
-      "collectionGroup": "nodes",
+      "collectionGroup": "devices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath":"status","order":"ASCENDING"},
+        {"fieldPath":"device_id","order":"ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "devices",
       "queryScope": "COLLECTION",
       "fields": [
         {"fieldPath":"communityId","order":"ASCENDING"},

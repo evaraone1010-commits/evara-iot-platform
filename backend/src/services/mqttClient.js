@@ -112,9 +112,14 @@ if (useSecureMQTT) {
       mqttOptions.ca = [fs.readFileSync(caCertPath)];
       logger.debug(`[MQTT] TLS enabled: CA certificate loaded from ${caCertPath}`);
     } else {
-      // Self-signed or development: skip strict verification
+      // Production: REQUIRE valid certificate, fail hard
+      if (process.env.NODE_ENV === 'production') {
+        logger.error(`[MQTT] ❌ CRITICAL: TLS required in production but CA cert not found at ${caCertPath}`);
+        process.exit(1);
+      }
+      // Development: allow self-signed fallback
       mqttOptions.rejectUnauthorized = false;
-      logger.warn(`[MQTT] TLS enabled but CA cert not found at ${caCertPath}. Running with insecure mode (dev only).`);
+      logger.warn(`[MQTT] ⚠️  TLS enabled but CA cert not found. Running in INSECURE mode (development only).`);
     }
   } catch (err) {
     logger.error(`[MQTT] Failed to load CA certificate:`, err.message);
@@ -201,7 +206,7 @@ setInterval(() => {
       lastUpdateMap.delete(deviceId);
     }
   }
-}, LAST_UPDATE_TTL_MS);
+}, LAST_UPDATE_TTL_MS).unref();
 
 // ============================================================================
 // ✅ TASK #5 + FIX #5 — Validated Message Handler with Publisher Authentication

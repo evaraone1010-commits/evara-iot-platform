@@ -59,10 +59,28 @@ async function syncNodeStatus(id, type, lastSeen, additionalData = {}) {
                 ...additionalData,
                 timestamp: lastSeen,
                 status
-            }
+            },
+            ...additionalData
         };
 
+        // 1. Update typed collection (metadata)
         await db.collection(typeLower).doc(id).update(updatePayload);
+
+        // 2. Update central registry (devices) for dashboard/list views
+        const registryPayload = {
+            status,
+            last_updated_at: lastSeen,
+            last_seen: lastSeen,
+            telemetry_snapshot: updatePayload.telemetry_snapshot
+        };
+
+        // Map common fields to registry for list view accuracy
+        if (additionalData.level_percentage !== undefined) registryPayload.level_percentage = additionalData.level_percentage;
+        if (additionalData.flow_rate !== undefined) registryPayload.flow_rate = additionalData.flow_rate;
+        if (additionalData.tds_value !== undefined) registryPayload.tds_value = additionalData.tds_value;
+
+        await db.collection("devices").doc(id).update(registryPayload);
+        logger.debug(`[syncNodeStatus] ✅ Synchronized ${id} (${type}) -> ${status}`);
     } catch (err) {
         logger.error(`Status sync failed for ${id}:`, err);
     }
@@ -119,7 +137,7 @@ exports.getNodes = async (req, res, next) => {
         //
         // The ~500ms DB call is worth the accuracy of real-time status
         // We'll implement targeted field-level caching later instead
-        const shouldSkipCache = true;  // Always get fresh status data
+        const shouldSkipCache = false;  // Use cache to improve performance
         
         if (!shouldSkipCache && shouldUseCache) {
             const cachedNodes = await cache.get(nodesCacheKey);
@@ -214,6 +232,7 @@ exports.getNodes = async (req, res, next) => {
                         zoneMap[doc.id] = doc.data().zoneName || doc.data().name || doc.id;
                     }
                 });
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
         logger.debug(`[NodesController] Loaded zone map with ${Object.keys(zoneMap).length} entries`);
@@ -235,6 +254,7 @@ exports.getNodes = async (req, res, next) => {
                         customerMap[doc.id] = name;
                     }
                 });
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
         logger.debug(`[NodesController] Loaded customer map with ${Object.keys(customerMap).length} entries`);
@@ -405,14 +425,6 @@ exports.getNodes = async (req, res, next) => {
         // there's no point in caching. Status accuracy > performance optimization
         // Once status is stored in DB reliably, we can re-enable caching
         
-        // Legacy code - keeping for reference but disabled:
-        // if (shouldUseCache && !filterCustomerId) {
-        //     logger.debug(`[NodesController] Caching superadmin result for ${Math.ceil(nodes.length / 2)} seconds`);
-        //     await cache.set(nodesCacheKey, nodes, Math.ceil(nodes.length / 2));
-        // } else if (filterCustomerId) {
-        //     logger.debug(`[NodesController] ALWAYS FRESH: Customer-specific query - NOT cached`);
-        // }
-        
         logger.debug(`[NodesController] ALWAYS FRESH: Device list not cached (status accuracy priority)`);
         
         res.status(200).json({
@@ -557,109 +569,35 @@ exports.getNodeTelemetry = async (req, res) => {
 
 
 exports.getNodeGraphData = async (req, res, next) => {
-    try {
-        const deviceDoc = await resolveDevice(req.params.id);
-        if (!deviceDoc || !deviceDoc.exists) return res.status(404).json({ error: "Device not found" });
+  try {
+    const { id: nodeId } = req.params;
+    const { window = '6H' } = req.query;
 
-        const registry = deviceDoc.data();
-        const type = (registry.device_type || "").toLowerCase();
-        if (!type) return res.status(400).json({ error: "Device type not specified" });
+    const resolver = new HybridDataResolver(nodeId);
 
-        const metaDoc = await db.collection(type).doc(deviceDoc.id).get();
-        if (!metaDoc.exists) return res.status(404).json({ error: "Metadata not found" });
-
-        if (req.user.role !== "superadmin") {
-            const isOwner = await checkOwnership(req.user.customer_id || req.user.uid, deviceDoc.id, req.user.role, req.user.community_id);
-            if (!isOwner) return res.status(403).json({ error: "Unauthorized" });
-
-            // ✅ CRITICAL FIX: ENFORCE DEVICE VISIBILITY (using shared helper)
-            if (!checkDeviceVisibilityWithAudit(registry, deviceDoc.id, req.user.uid, req.user.role)) {
-                return res.status(403).json({ error: "Device not visible to your account" });
-            }
-        }
-
-        const metadata = metaDoc.data();
-        const channelId = metadata.thingspeak_channel_id?.trim();
-        const apiKey = metadata.thingspeak_read_api_key?.trim();
-        const { incremental = false, lastTimestamp } = req.query;
-
-        if (!channelId || !apiKey) {
-            return res.status(200).json({
-                data: [],
-                metrics: {
-                    currentLevel: null,
-                    volume: null,
-                    fillRate: null,
-                    consumption: null,
-                    status: DEVICE_STATUS.OFFLINE
-                }
-            });
-        }
-
-        try {
-            if (incremental === 'true' && lastTimestamp) {
-                const latestPoint = await fetchLatestData(channelId, apiKey, lastTimestamp);
-
-                if (!latestPoint) {
-                    return res.status(200).json({
-                        data: [],
-                        lastTimestamp: lastTimestamp,
-                        hasNewData: false,
-                        metrics: null
-                    });
-                }
-
-                return res.status(200).json({
-                    data: [latestPoint],
-                    lastTimestamp: latestPoint.timestamp,
-                    hasNewData: true,
-                    metrics: null
-                });
-            } else {
-                const fullData = await fetchSixHourData(channelId, apiKey);
-
-                if (!fullData || fullData.length === 0) {
-                    return res.status(200).json({
-                        data: [],
-                        lastTimestamp: null,
-                        hasNewData: false,
-                        metrics: {
-                            currentLevel: null,
-                            volume: null,
-                            fillRate: null,
-                            consumption: null,
-                            status: DEVICE_STATUS.OFFLINE
-                        }
-                    });
-                }
-
-                const smoothedData = applyLightSmoothing(fullData);
-                const metrics = calculateMetrics(smoothedData);
-
-                return res.status(200).json({
-                    data: smoothedData,
-                    lastTimestamp: smoothedData.length > 0 ? smoothedData[smoothedData.length - 1].timestamp : null,
-                    hasNewData: smoothedData.length > 0,
-                    metrics: metrics
-                });
-            }
-        } catch (err) {
-            return res.status(200).json({
-                data: [],
-                lastTimestamp: lastTimestamp || null,
-                hasNewData: false,
-                metrics: {
-                    currentLevel: null,
-                    volume: null,
-                    fillRate: null,
-                    consumption: null,
-                    status: DEVICE_STATUS.OFFLINE
-                }
-            });
-        }
-    } catch (error) {
-        next(error);
+    // 1. Try Redis cache first (written by telemetryWorker)
+    const cached = await resolver.getFromCache(window);
+    if (cached) {
+      return res.json({ success: true, source: 'cache', data: cached });
     }
+
+    // 2. Try Firestore aggregated data
+    const stored = await resolver.getFromFirestore(window);
+    if (stored && stored.length > 0) {
+      // Warm the cache for next request
+      await resolver.setCache(window, stored);
+      return res.json({ success: true, source: 'firestore', data: stored });
+    }
+
+    // 3. Last resort — ThingSpeak direct (only if no stored data at all)
+    // This path is only hit for brand-new devices with zero history
+    const fresh = await resolver.getFromThingSpeak(window);
+    await resolver.setCache(window, fresh);
+    return res.json({ success: true, source: 'thingspeak', data: fresh });
+
+  } catch (err) {
+    return next(err);
+  }
 };
 
 /**
@@ -701,8 +639,17 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
         let start, end;
 
         if (startDate && endDate) {
-            start = new Date(startDate);
-            end = new Date(endDate);
+            // Force 00:00:00 to 23:59:59 in IST (UTC+5:30)
+            const s = new Date(startDate);
+            const e = new Date(endDate);
+            
+            // Normalize to start of day IST (which is 18:30 UTC of previous day)
+            s.setUTCHours(0, 0, 0, 0);
+            start = new Date(s.getTime() - (5.5 * 60 * 60 * 1000));
+            
+            // Normalize to end of day IST (which is 18:29:59 UTC of same day)
+            e.setUTCHours(23, 59, 59, 999);
+            end = new Date(e.getTime() - (5.5 * 60 * 60 * 1000));
         } else {
             end = new Date();
             const daysMap = { "1W": 7, "1M": 30, "3M": 90, "6M": 180 };
@@ -749,12 +696,27 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
             });
         }
 
-        // ✅ Process data for display
+        // ✅ Process data for display and unify field names
         const fieldMapping = metadata.sensor_field_mapping || {};
-        const graphData = resolverResult.data.map(record => ({
-            timestamp: record.timestamp instanceof Date ? record.timestamp : new Date(record.timestamp),
-            ...record
-        }));
+        const graphData = resolverResult.data.map(record => {
+            const point = {
+                timestamp: record.timestamp instanceof Date ? record.timestamp : new Date(record.timestamp),
+                ...record
+            };
+            
+            // Map raw fieldX keys to internal keys (water_level, flow_rate, etc.)
+            Object.entries(fieldMapping).forEach(([fieldKey, internalKey]) => {
+                if (record[fieldKey] !== undefined && internalKey) {
+                    point[internalKey] = record[fieldKey];
+                }
+            });
+
+            // Ensure 'value' property exists for applyLightSmoothing and calculateMetrics
+            // We prioritize water_level, then flow_rate, then field1
+            point.value = Number(point.water_level ?? point.flow_rate ?? point.tds_value ?? record.field1 ?? 0);
+            
+            return point;
+        });
 
         // ✅ Apply light smoothing
         const smoothedData = applyLightSmoothing(graphData);
@@ -766,6 +728,7 @@ exports.getNodeGraphDataHybrid = async (req, res, next) => {
             source: resolverResult.source,
             dataAge: TelemetryArchiveService.getDataAgeCategory(start.getTime()),
             metrics,
+            field_mapping: fieldMapping,
             count: smoothedData.length,
             fetchedAt: new Date().toISOString(),
             cached: false
@@ -839,12 +802,29 @@ exports.getNodeAnalytics = async (req, res, next) => {
     } else if (startDate && endDate) {
       thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&start=${startDate}&end=${endDate}&results=8000`;
     } else {
-      // default 24H - fetching 480 points to cover the last 8 hours (at 1-min intervals)
-      thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=480`;
+      // default 24H - fetching by time (last 24 hours) instead of arbitrary result limit
+      // results=8000 is the maximum allowed by ThingSpeak per request, ensuring high-frequency nodes are not cut off.
+      // We also add minutes=1440 to strictly fetch the last 24 hours.
+      thingspeakUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&minutes=1440&results=8000`;
     }
 
     const response = await axios.get(thingspeakUrl);
-    const feeds = response.data.feeds || [];
+    let feeds = response.data.feeds || [];
+
+    // âœ… FIX: If no data in current window (e.g. offline > 24h), fetch the absolute last known entry
+    // This ensures we always have a "Last Seen" time and value to display.
+    if (feeds.length === 0) {
+      try {
+        const lastFeedUrl = `https://api.thingspeak.com/channels/${channelId}/feeds/last.json?api_key=${apiKey}`;
+        const lastResponse = await axios.get(lastFeedUrl);
+        if (lastResponse.data && lastResponse.data.created_at) {
+          feeds = [lastResponse.data];
+          logger.debug(`[NodesController] No data in ${range || '24H'} window, fetched last known entry from ThingSpeak for ${deviceDoc.id}`);
+        }
+      } catch (err) {
+        logger.error(`[NodesController] Failed to fetch last feed fallback for ${deviceDoc.id}:`, err.message);
+      }
+    }
 
     if (feeds.length === 0) {
       return res.status(200).json({
@@ -866,66 +846,33 @@ exports.getNodeAnalytics = async (req, res, next) => {
       Object.keys(fieldMapping).find(k => fieldMapping[k] && fieldMapping[k].includes("water_level")) ||
       (sampleFeed.field1 !== undefined ? "field1" : "field2");
 
-    // â”€â”€ FLOW METER path (unchanged) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── FLOW METER path (Centralized via deviceStateService) ─────────────────
     if (["evaraflow", "flow", "flow_meter"].includes(type)) {
-      const flowKeys = ['flowField', 'flow_rate', 'flow_rate_field'];
-      const totalKeys = ['volumeField', 'current_reading', 'total_reading', 'meter_reading_field'];
-
-      let flowRateFieldKey =
-        deviceDoc.data().flow_rate_field ||
-        Object.keys(fieldMapping).find(k => flowKeys.includes(fieldMapping[k])) ||
-        "field4";
-
-      let totalReadingFieldKey =
-        deviceDoc.data().meter_reading_field ||
-        Object.keys(fieldMapping).find(k => totalKeys.includes(fieldMapping[k])) ||
-        "field5";
-
       if (feeds.length > 0) {
-        const latestFeed = getLatestFeed(feeds);
-        if (!totalReadingFieldKey || !latestFeed[totalReadingFieldKey]) {
-          let maxVal = -1;
-          for (let i = 1; i <= 8; i++) {
-            const val = parseFloat(latestFeed[`field${i}`]);
-            if (!isNaN(val) && val > maxVal) {
-              maxVal = val;
-              totalReadingFieldKey = `field${i}`;
-            }
-          }
-        }
-        if (!flowRateFieldKey || !latestFeed[flowRateFieldKey]) {
-          for (const f of ["field3", "field4", "field1", "field2"]) {
-            const val = parseFloat(latestFeed[f]);
-            if (!isNaN(val) && val > 0 && val < 1000 && f !== totalReadingFieldKey) {
-              flowRateFieldKey = f;
-              break;
-            }
-          }
-        }
-        if (!flowRateFieldKey) flowRateFieldKey = "field4";
-        if (!totalReadingFieldKey) totalReadingFieldKey = "field5";
+        // Use centralized processing logic for consistency
+        const processed = await deviceState.processThingSpeakData(metadata, feeds);
+        if (!processed) return res.status(404).json({ error: "Processing failed" });
 
-        const lastUpdatedAt = latestFeed.created_at;
-        const status = deviceState.calculateDeviceStatus(lastUpdatedAt);
-
+        const { flowField, totalField } = processed._debugFields || {};
+        
         const flowResult = {
           node_id: req.params.id,
-          status,
-          lastUpdatedAt,
-          active_fields: { flow_rate: flowRateFieldKey, total_liters: totalReadingFieldKey },
-          flow_rate: parseFloat(latestFeed[flowRateFieldKey]) || 0,
-          total_liters: parseFloat(latestFeed[totalReadingFieldKey]) || 0,
+          status: processed.status,
+          lastUpdatedAt: processed.lastUpdatedAt,
+          active_fields: { flow_rate: flowField, total_liters: totalField },
+          flow_rate: processed.flow_rate,
+          total_liters: processed.total_liters,
           history: feeds.map(f => ({
             timestamp: normalizeThingSpeakTimestamp(f.created_at),
-            flow_rate: parseFloat(f[flowRateFieldKey]) || 0,
-            total_liters: parseFloat(f[totalReadingFieldKey]) || 0
+            flow_rate: parseFloat(f[flowField]) || 0,
+            total_liters: parseFloat(f[totalField]) || 0
           }))
         };
 
-        syncNodeStatus(deviceDoc.id, type, lastUpdatedAt, {
+        syncNodeStatus(deviceDoc.id, type, processed.lastUpdatedAt, {
           flow_rate: flowResult.flow_rate,
           total_liters: flowResult.total_liters,
-          status
+          status: processed.status
         }).catch(err => logger.error("Sync error:", err));
 
         await cache.set(analyticsCacheKey, flowResult, 300);
@@ -1106,12 +1053,12 @@ exports.getNodeAnalytics = async (req, res, next) => {
       tankBehavior,
     };
 
-    // Update Firebase
-    await db.collection(type).doc(deviceDoc.id).update({
+    // ✅ FIX: Use syncNodeStatus to ensure registry (All Nodes page) and metadata are both updated
+    await syncNodeStatus(deviceDoc.id, type, latestPoint.timestamp, {
       level_percentage: latestPoint.level,
       currentVolume: latestPoint.volume,
       waterState: analytics.state,
-    }).catch(err => logger.error("Metadata update error:", err));
+    }).catch(err => logger.error("Sync error:", err));
 
     await cache.set(analyticsCacheKey, tankResult, 300);
     return res.status(200).json(tankResult);

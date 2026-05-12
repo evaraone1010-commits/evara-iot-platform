@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 .env.prod
+*.pem
+*-service-account.json
+serviceAccountKey.json
 
 # Node modules
 node_modules/

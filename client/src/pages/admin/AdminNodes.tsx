@@ -51,6 +51,7 @@ const AdminNodes = () => {
     "GovtBorewell",
     "PumpHouse",
     "FlowMeter",
+    "EvaraTDS",
   ];
 
   // Fetch Metadata (Zones/Comms/Custs) once
@@ -89,7 +90,7 @@ const AdminNodes = () => {
   const enrichedNodes = useMemo(() => {
     return nodes.map((node) => {
       let zoneName = "Loading...";
-      let communityName = "Loading...";
+      const communityName = "Loading...";
       let customerName = "Loading...";
 
       // Find hierarchy data
@@ -126,6 +127,8 @@ const AdminNodes = () => {
       assetType = "EvaraDeep";
     if (formData.category === "PumpHouse" || formData.category === "FlowMeter")
       assetType = "EvaraFlow";
+    if (formData.category === "EvaraTDS")
+      assetType = "EvaraTDS";
 
     try {
       const nodeData = {

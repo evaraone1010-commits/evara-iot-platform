@@ -8,7 +8,7 @@ echo "[$(date)] 🚀 Docker Container Startup"
 
 # Kill any lingering Node processes (shouldn't happen, but safety first)
 # In a clean container this should be a no-op
-pkill -f "node.*src/server.js" 2>/dev/null || true
+pkill -f "node.*src/bootstrap.js" 2>/dev/null || true
 sleep 1
 
 # Verify PORT environment variable is set
@@ -21,4 +21,4 @@ echo "[$(date)] ✅ Starting Node.js backend on port $PORT"
 
 # Execute main process directly (don't fork, so container PID 1 is node)
 # This ensures container receives SIGTERM for graceful shutdown
-exec node src/server.js
+exec node src/bootstrap.js

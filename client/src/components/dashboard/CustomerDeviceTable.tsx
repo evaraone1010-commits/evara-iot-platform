@@ -1,6 +1,8 @@
-import { useState, useMemo } from 'react';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { adminService } from '../../services/admin';
+import { deviceService } from '../../services/DeviceService';
 import { Link } from 'react-router-dom';
 
 export default function CustomerDeviceTable() {
@@ -12,9 +14,40 @@ export default function CustomerDeviceTable() {
         staleTime: 1000 * 60 * 10 
     });
 
-    const rows = useMemo(() => customers.filter((c: any) => 
-        !search || (c.full_name ?? c.display_name ?? c.email ?? '').toLowerCase().includes(search.toLowerCase())
-    ), [customers, search]);
+    const [rowsData, setRowsData] = useState<any[]>([]);
+
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            try {
+                const nodes = await deviceService.getMapNodes();
+                const byCustomer: Record<string, any[]> = {};
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                nodes.forEach((n: any) => {
+                    const cid = (n as any).customer_id || (n as any).customerId || (n as any).customer;
+                    if (!cid) return;
+                    if (!byCustomer[cid]) byCustomer[cid] = [];
+                    byCustomer[cid].push(n);
+                });
+
+                if (!mounted) return;
+                const enriched = (customers || []).map((c: any) => ({
+                    ...c,
+                    devices: byCustomer[c.id] || [],
+                    deviceCount: (byCustomer[c.id] || []).length,
+                }));
+                setRowsData(enriched);
+            } catch {
+                setRowsData(customers as any[]);
+            }
+        })();
+        return () => { mounted = false; };
+    }, [customers]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = useMemo(() => (rowsData || []).filter((c: any) => 
+        !search || ((c.full_name ?? c.display_name ?? c.email ?? '') as string).toLowerCase().includes(search.toLowerCase())
+    ), [rowsData, search]);
 
     return (
         <div className="apple-glass-card rounded-[20px] overflow-hidden h-full flex flex-col">

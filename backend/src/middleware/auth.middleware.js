@@ -21,49 +21,70 @@ const requireAuth = async (req, res, next) => {
         let userData = await cache.get(cacheKey);
 
         if (!userData) {
-            // Not cached — fetch from Firestore with timeout
+            // ✅ AUDIT FIX: Use AbortController instead of Promise.race to prevent orphaned promises
+            const controller = new AbortController();
+            const { signal } = controller;
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
             try {
-                const firestoreTimeout = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error("Firestore lookup timed out")), 3000)
-                );
+                // Priority 1: Superadmins by ID
+                let userDoc = await db.collection("superadmins").doc(decodedToken.uid).get();
+                if (signal.aborted) throw new Error('AbortError');
+                
+                if (userDoc.exists) {
+                    userData = userDoc.data();
+                } else {
+                    // Priority 2: Customers by ID
+                    userDoc = await db.collection("customers").doc(decodedToken.uid).get();
+                    if (signal.aborted) throw new Error('AbortError');
 
-                const lookupTask = (async () => {
-                    try {
-                        // Priority 1: Superadmins by ID
-                        let userDoc = await db.collection("superadmins").doc(decodedToken.uid).get();
-                        if (userDoc.exists) return userDoc.data();
-
-                        // Priority 2: Customers by ID
-                        userDoc = await db.collection("customers").doc(decodedToken.uid).get();
-                        if (userDoc.exists) return { ...userDoc.data(), id: userDoc.id };
-
+                    if (userDoc.exists) {
+                        userData = { ...userDoc.data(), id: userDoc.id };
+                    } else if (decodedToken.email) {
                         // Priority 3: Customers by Email (Fallback for pre-provisioned SaaS users)
-                        if (decodedToken.email) {
-                            const emailMatches = await db.collection("customers")
-                                .where("email", "==", decodedToken.email)
-                                .limit(1)
-                                .get();
-                            
-                            if (!emailMatches.empty) {
-                                const match = emailMatches.docs[0];
-                                return { ...match.data(), id: match.id };
-                            }
+                        const emailMatches = await db.collection("customers")
+                            .where("email", "==", decodedToken.email)
+                            .limit(1)
+                            .get();
+                        
+                        if (signal.aborted) throw new Error('AbortError');
+                        
+                        if (!emailMatches.empty) {
+                            const match = emailMatches.docs[0];
+                            userData = { ...match.data(), id: match.id };
+                        } else {
+                            // Auto-provision basic customer profile
+                            const bootstrapProfile = {
+                                email: decodedToken.email,
+                                full_name: decodedToken.name || decodedToken.email.split("@")[0] || "User",
+                                display_name: decodedToken.name || decodedToken.email.split("@")[0] || "User",
+                                role: "customer",
+                                plan: "pro",
+                                status: "active",
+                                phone_number: "",
+                                zone_id: null,
+                                created_at: new Date().toISOString(),
+                            };
+
+                            await db.collection("customers").doc(decodedToken.uid).set(bootstrapProfile, { merge: true });
+                            if (signal.aborted) throw new Error('AbortError');
+                            userData = { ...bootstrapProfile, id: decodedToken.uid };
                         }
-
-                        // No matching user found — return null to signal rejection
-                        return null;
-                    } catch (e) {
-                        logger.error("Auth lookup failed", e, { category: 'auth' });
-                        return null; // Signal auth failure — do NOT default to customer
                     }
-                })();
+                }
 
-                userData = await Promise.race([lookupTask, firestoreTimeout]);
-                // Cache the result for 10 minutes
-                await cache.set(cacheKey, userData, AUTH_CACHE_TTL);
-            } catch (dbError) {
-                logger.error("Firestore lookup failed", null, { category: 'auth', detail: dbError.message });
-                return res.status(503).json({ error: "Authentication service temporarily unavailable. Please try again." });
+                if (userData) {
+                    await cache.set(cacheKey, userData, AUTH_CACHE_TTL);
+                }
+            } catch (err) {
+                if (err.name === 'AbortError' || signal.aborted) {
+                    logger.warn('[Auth Middleware] Auth lookup timed out', { uid: decodedToken.uid });
+                    return res.status(503).json({ error: "Authentication service timeout" });
+                }
+                logger.error("[Auth Middleware] Firestore lookup failed", err, { category: 'auth' });
+                return res.status(503).json({ error: "Authentication service unavailable" });
+            } finally {
+                clearTimeout(timeoutId);
             }
         }
 
@@ -128,20 +149,24 @@ async function checkOwnership(uid, deviceId, role = "customer", communityId = ""
         }
 
         // ────────────────────────────────────────────────────────────────────────────
-        // Authoritative Firestore read (two levels: devices/ then type-specific collection)
+        // Authoritative Firestore read (Optimized single read if possible)
         // ────────────────────────────────────────────────────────────────────────────
         const registry = await db.collection("devices").doc(deviceId).get();
         if (!registry.exists) return false;
 
-        const type = registry.data().device_type;
-        if (!type) return false;
+        const regData = registry.data();
+        let ownerId = regData.customer_id || regData.customerId || null;
+        let ownerCommunityId = regData.community_id || regData.communityId || null;
 
-        const meta = await db.collection(type.toLowerCase()).doc(deviceId).get();
-        if (!meta.exists) return false;
-
-        const data = meta.data();
-        const ownerId = data.customer_id || null;
-        const ownerCommunityId = data.community_id || null;
+        // If registry doesn't have ownership, fallback to typed collection (legacy support)
+        if (!ownerId && regData.device_type) {
+            const meta = await db.collection(regData.device_type.toLowerCase()).doc(deviceId).get();
+            if (meta.exists) {
+                const data = meta.data();
+                ownerId = data.customer_id || null;
+                ownerCommunityId = data.community_id || null;
+            }
+        }
 
         // ────────────────────────────────────────────────────────────────────────────
         // Write fresh ownership OBJECT to cache (not bare string!)

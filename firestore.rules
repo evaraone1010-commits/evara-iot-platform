@@ -26,6 +26,10 @@ service cloud.firestore {
         ));
     }
 
+    function isOwnerOfDevice(deviceId) {
+      return canReadRegistryData(get(/databases/$(database)/documents/devices/$(deviceId)).data);
+    }
+
     function canReadRegistryData(data) {
       return isSuperAdmin()
         || (customerDoc() && (
@@ -47,25 +51,31 @@ service cloud.firestore {
     }
 
     match /flow_meter/{docId} {
-      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data));
+      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data) || isOwnerOfDevice(docId));
+      allow list: if isSignedIn() && canReadDeviceData(resource.data);
+      allow write: if isSuperAdmin();
+    }
+
+    match /evaraflow/{docId} {
+      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data) || isOwnerOfDevice(docId));
       allow list: if isSignedIn() && canReadDeviceData(resource.data);
       allow write: if isSuperAdmin();
     }
 
     match /evaratank/{docId} {
-      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data));
+      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data) || isOwnerOfDevice(docId));
       allow list: if isSignedIn() && canReadDeviceData(resource.data);
       allow write: if isSuperAdmin();
     }
 
     match /evaradeep/{docId} {
-      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data));
+      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data) || isOwnerOfDevice(docId));
       allow list: if isSignedIn() && canReadDeviceData(resource.data);
       allow write: if isSuperAdmin();
     }
 
     match /evaratds/{docId} {
-      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data));
+      allow get: if isSignedIn() && (resource == null || canReadDeviceData(resource.data) || isOwnerOfDevice(docId));
       allow list: if isSignedIn() && canReadDeviceData(resource.data);
       allow write: if isSuperAdmin();
     }

@@ -102,8 +102,10 @@ function App() {
                                                     <Route path="/evaradeep/:hardwareId" element={<EvaraDeepAnalytics />} />
                                                     <Route path="/evaraflow" element={<EvaraFlowAnalytics />} />
                                                     <Route path="/evaraflow/:hardwareId" element={<EvaraFlowAnalytics />} />
-                                                    <Route path="/evaratds/:id" element={<EvaraTDSAnalytics />} />
-                                                    <Route path="/admin" element={<Admin />} />
+                                                    <Route path="/evaratds/:hardwareId" element={<EvaraTDSAnalytics />} />
+                                                    <Route element={<ProtectedRoute allowedRoles={['superadmin', 'community_admin']} />}>
+                                                        <Route path="/admin" element={<Admin />} />
+                                                    </Route>
                                                 </Route>
 
                                                 {/* Admin Routes (Super Admin) */}
@@ -132,6 +134,7 @@ function App() {
                                             </Route>
 
                                             {/* Catch-all redirect to Map */}
+                                            <Route path="*" element={<Navigate to="/map" replace />} />
                                         </Routes>
                                     </Suspense>
                                 </GlobalBackground>

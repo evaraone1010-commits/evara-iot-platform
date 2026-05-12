@@ -30,49 +30,80 @@
  */
 
 const { db } = require("../config/firebase.js");
+const cache = require("../config/cache.js");
 const logger = require("./logger.js");
+
+function hasFirestoreConfig() {
+    return !!(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY);
+}
 
 /**
  * Build versioned cache key
- * Returns: "zones_list_v123" (123 is current version number)
+ * Uses Redis as primary authority for speed and consistency, fallbacks to Firestore
+ * Returns: "zones_v123"
  */
 async function getVersionKey(prefix) {
+    const redisKey = `version:${prefix}`;
+    
     try {
-        const versionDoc = await db.collection('_cache_versions').doc(prefix).get();
-        const version = versionDoc.exists ? versionDoc.data().version : 1;
-        return `${prefix}_v${version}`;
+        // 1. Try Redis first (High speed, strongly consistent for this use case)
+        const cachedVersion = await cache.get(redisKey);
+        if (cachedVersion !== undefined) {
+            return String(cachedVersion);
+        }
+
+        // 2. Fallback to Firestore if Redis MISS
+        if (hasFirestoreConfig()) {
+            const versionDoc = await db.collection('_cache_versions').doc(prefix).get();
+            const version = versionDoc.exists ? versionDoc.data().version : 1;
+            
+            // Populate Redis for next time (long TTL: 24h)
+            await cache.set(redisKey, version, 86400);
+            return String(version);
+        }
     } catch (err) {
         logger.error(`[CacheVersioning] Failed to get version for ${prefix}:`, err.message);
-        // Fallback to v1 on error (will cause cache miss but won't crash)
-        return `${prefix}_v1`;
     }
+    
+    return "1";
 }
 
 /**
  * Increment version counter (atomically invalidates all related cache keys)
- * Called when a resource is created/updated/deleted
+ * Increments both Redis and Firestore to maintain sync.
  */
 async function incrementCacheVersion(resourceType) {
+    const redisKey = `version:${resourceType}`;
+    
     try {
-        const versionRef = db.collection('_cache_versions').doc(resourceType);
+        // 1. Atomic Increment in Redis (Instant)
+        if (cache.isRedisReady) {
+            await cache.redis.incr(redisKey);
+            // Ensure TTL is set (24h)
+            await cache.redis.expire(redisKey, 86400);
+        } else {
+            // Memory fallback
+            const current = (await cache.get(redisKey)) || 1;
+            await cache.set(redisKey, current + 1, 86400);
+        }
+
+        // 2. Persistent Update in Firestore (Background/Backup)
+        if (hasFirestoreConfig()) {
+            const versionRef = db.collection('_cache_versions').doc(resourceType);
+            await versionRef.set(
+                { version: require("firebase-admin/firestore").FieldValue.increment(1) },
+                { merge: true }
+            );
+        }
         
-        // Atomic increment: even with concurrent requests, version increments correctly
-        await versionRef.set(
-            { version: require("firebase-admin/firestore").FieldValue.increment(1) },
-            { merge: true }
-        );
-        
-        logger.debug(`[CacheVersioning] Incremented ${resourceType} version (invalidates all ${resourceType}_* keys)`);
+        logger.debug(`[CacheVersioning] Incremented ${resourceType} version`);
     } catch (err) {
-        // Version increment failure is non-critical
-        // Next request will still work (just cache miss, then fresh data)
         logger.warn(`[CacheVersioning] Failed to increment ${resourceType}:`, err.message);
     }
 }
 
 /**
  * Initialize cache versions for all resource types
- * Call this during app startup
  */
 async function initializeCacheVersions() {
     const resourceTypes = [
@@ -81,17 +112,19 @@ async function initializeCacheVersions() {
         'nodes',
         'customers',
         'audit_logs',
-        'telemetry'
+        'telemetry',
+        'default'
     ];
 
     for (const type of resourceTypes) {
+        const redisKey = `version:${type}`;
         try {
-            const versionRef = db.collection('_cache_versions').doc(type);
-            const exists = await versionRef.get();
-            
-            if (!exists.exists) {
-                await versionRef.set({ version: 1, created_at: new Date() });
-                logger.debug(`[CacheVersioning] Initialized ${type} version to 1`);
+            // Check Redis first
+            const existsInRedis = await cache.get(redisKey);
+            if (existsInRedis === undefined && hasFirestoreConfig()) {
+                const versionDoc = await db.collection('_cache_versions').doc(type).get();
+                const version = versionDoc.exists ? versionDoc.data().version : 1;
+                await cache.set(redisKey, version, 86400);
             }
         } catch (err) {
             logger.warn(`[CacheVersioning] Failed to initialize ${type}:`, err.message);

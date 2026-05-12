@@ -1,43 +1,13 @@
-const winston = require('winston');
+const { logger } = require('../config/pino.js');
 const Sentry = require('@sentry/node');
 
-const isProduction = process.env.NODE_ENV === 'production';
-
-const transports = [
-  new winston.transports.Console({
-    format: isProduction
-      ? winston.format.json()           // structured JSON for CloudWatch
-      : winston.format.combine(
-          winston.format.colorize(),
-          winston.format.simple()       // human-readable locally
-        )
-  })
-];
-
-// ONLY add file transports in local dev
-if (!isProduction) {
-  transports.push(
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' })
-  );
-}
-
-// Configure Winston logger
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'evara-backend' },
-  transports
-});
-
-// Structured logging methods
+/**
+ * Structured logging wrapper that uses Pino under the hood
+ * Maintains compatibility with the existing Winston-based interface
+ */
 const structuredLogger = {
   info: (message, meta = {}) => {
-    logger.info(message, meta);
+    logger.info(meta, message);
   },
   
   error: (message, error = null, meta = {}) => {
@@ -51,7 +21,7 @@ const structuredLogger = {
         }
       })
     };
-    logger.error(message, errorMeta);
+    logger.error(errorMeta, message);
     
     // Send to Sentry in production
     if (process.env.NODE_ENV === 'production' && error) {
@@ -60,58 +30,58 @@ const structuredLogger = {
   },
   
   warn: (message, meta = {}) => {
-    logger.warn(message, meta);
+    logger.warn(meta, message);
   },
   
   debug: (message, meta = {}) => {
-    logger.debug(message, meta);
+    logger.debug(meta, message);
   },
   
   // Specialized logging methods
   auth: (action, userId, meta = {}) => {
-    logger.info(`Auth: ${action}`, {
+    logger.info({
       category: 'auth',
       userId,
       ...meta
-    });
+    }, `Auth: ${action}`);
   },
   
   api: (method, endpoint, statusCode, duration, meta = {}) => {
-    logger.info(`API: ${method} ${endpoint}`, {
+    logger.info({
       category: 'api',
       method,
       endpoint,
       statusCode,
       duration,
       ...meta
-    });
+    }, `API: ${method} ${endpoint}`);
   },
   
   database: (operation, collection, meta = {}) => {
-    logger.info(`DB: ${operation} on ${collection}`, {
+    logger.info({
       category: 'database',
       operation,
       collection,
       ...meta
-    });
+    }, `DB: ${operation} on ${collection}`);
   },
   
   telemetry: (nodeId, action, meta = {}) => {
-    logger.info(`Telemetry: ${action} for node ${nodeId}`, {
+    logger.info({
       category: 'telemetry',
       nodeId,
       action,
       ...meta
-    });
+    }, `Telemetry: ${action} for node ${nodeId}`);
   },
   
   mqtt: (topic, action, meta = {}) => {
-    logger.info(`MQTT: ${action} on ${topic}`, {
+    logger.info({
       category: 'mqtt',
       topic,
       action,
       ...meta
-    });
+    }, `MQTT: ${action} on ${topic}`);
   }
 };
 

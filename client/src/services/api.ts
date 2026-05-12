@@ -5,25 +5,71 @@ import axios, {
 } from "axios";
 import { io } from 'socket.io-client';
 import { auth } from "../lib/firebase";
+import { getApiBaseUrl, getSocketUrl } from "../utils/runtimeUrls";
+import logger from "../utils/logger";
 
-// In development: use relative path for Vite proxy to work
-// In production: use absolute URL from env
-const VITE_API_URL = import.meta.env.VITE_API_URL || 
-  (import.meta.env.DEV ? "/api/v1" : "http://localhost:8000/api/v1");
-const SOCKET_URL = import.meta.env.VITE_WS_URL || 
-  (import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api/v1', '') : 'http://localhost:8000');
+// Use same-domain defaults unless an explicit env override is provided.
+const VITE_API_URL = getApiBaseUrl();
+const SOCKET_URL = getSocketUrl();
 
-console.log('[API Config] VITE_API_URL:', VITE_API_URL);
-console.log('[API Config] SOCKET_URL:', SOCKET_URL);
-console.log('[API Config] DEV mode:', import.meta.env.DEV);
+logger.log('[API Config] VITE_API_URL:', VITE_API_URL);
+logger.log('[API Config] SOCKET_URL:', SOCKET_URL);
+logger.log('[API Config] DEV mode:', import.meta.env.DEV);
+
+// Token cache — refresh only when it's about to expire
+let cachedToken: string | null = null;
+let tokenExpiresAt: number = 0;
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+
+/**
+ * Smart token retriever:
+ * 1. Returns cached token if valid and far from expiry
+ * 2. Uses getIdToken(false) to let Firebase handle internal caching
+ * 3. Decodes JWT to track expiry locally
+ */
+async function getSmartToken(): Promise<string | null> {
+  const now = Date.now();
+
+  // Return cached token if still valid (with buffer)
+  if (cachedToken && now < tokenExpiresAt - TOKEN_REFRESH_BUFFER_MS) {
+    return cachedToken;
+  }
+
+  const user = auth.currentUser;
+  if (!user) return null;
+
+  try {
+    // getIdToken(false) uses Firebase's internal cache if possible
+    const token = await user.getIdToken(false);
+    
+    // Simple JWT decode to find 'exp' field
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    
+    cachedToken = token;
+    tokenExpiresAt = payload.exp * 1000; // convert to ms
+    
+    return cachedToken;
+  } catch (err) {
+    logger.error('[API] Failed to refresh token:', err);
+    return null;
+  }
+}
+
+/**
+ * Clear the token cache (e.g. on logout)
+ */
+export function clearTokenCache() {
+  cachedToken = null;
+  tokenExpiresAt = 0;
+}
 
 export const socket = io(SOCKET_URL, {
+  autoConnect: false, // Prevents 400 Bad Request on page load before auth is ready
   auth: async (cb) => {
-    const user = auth.currentUser;
-    if (user) {
-      const token = await user.getIdToken();
-      cb({ token });
-    } else {
+    try {
+      const token = await getSmartToken();
+      cb({ token: token || undefined });
+    } catch (err) {
       cb({});
     }
   }
@@ -42,22 +88,16 @@ const api = axios.create({
 api.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
-      // Get Firebase user with timeout protection
-      const user = auth.currentUser;
+      const token = await getSmartToken();
       
-      if (!user) {
-        console.warn('[API Interceptor] No user logged in, skipping token injection');
-        return config;
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+        logger.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
+      } else {
+        logger.warn('[API Interceptor] No token available, skipping injection');
       }
-
-      // Get fresh ID token
-      const token = await user.getIdToken(true); // Force refresh
-      config.headers.Authorization = `Bearer ${token}`;
-      
-      console.log(`[API Interceptor] ✅ Token injected for ${config.method?.toUpperCase()} ${config.url}`);
     } catch (error) {
-      console.error("[API Interceptor] Failed to get token:", error);
-      // Don't throw - let request proceed (will fail with 401, which is correct)
+      logger.error("[API Interceptor] Failed to get token:", error);
     }
     return config;
   }
@@ -87,7 +127,7 @@ api.interceptors.response.use(
     const errorData = error.response?.data as any;
     const message = errorData?.error?.message || errorData?.error || error.message;
     
-    console.error(`[API Error] ${status || 'Network'}: ${typeof message === 'object' ? JSON.stringify(message) : message}`, {
+    logger.error(`[API Error] ${status || 'Network'}: ${typeof message === 'object' ? JSON.stringify(message) : message}`, {
         url: error.config?.url,
         method: error.config?.method,
         headers: error.config?.headers
@@ -95,9 +135,15 @@ api.interceptors.response.use(
     
     // Log 401 errors specifically for debugging
     if (status === 401) {
-      console.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
+      const hasCurrentUser = !!auth.currentUser;
       const authHeader = (error.config?.headers as any)?.Authorization;
-      console.error('[API Error] Authorization header present:', !!authHeader);
+
+      if (!hasCurrentUser) {
+        logger.warn('[API Error] 401 received while logged out. This can happen during route transitions after sign-out.');
+      } else {
+        logger.error('[API Error] 🔐 AUTHENTICATION FAILED - Check if user is logged in and token is valid');
+        logger.error('[API Error] Authorization header present:', !!authHeader);
+      }
     }
     
     return Promise.reject(error);

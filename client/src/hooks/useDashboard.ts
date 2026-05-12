@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { adminService } from '../services/admin';
 import { useAuth } from '../context/AuthContext';
+import { getApiBaseUrl } from '../utils/runtimeUrls';
 
 export interface DashboardStats {
     total_nodes: number;
@@ -64,7 +65,7 @@ export const useSystemHealth = () => {
         queryKey: ['system_health'],
         queryFn: async () => {
             // Health endpoint is at root level, not under /api/v1
-            const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+            const backendUrl = getApiBaseUrl();
             const healthUrl = backendUrl.replace('/api/v1', '/health');
             const response = await fetch(healthUrl);
             if (!response.ok) {

@@ -115,7 +115,7 @@ const getLatestFeed = (feeds) => {
 };
 
 const fetchChannelFeeds = async (channelId, apiKey, results = 1) => {
-  const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&results=${results}`;
+  const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${apiKey}&minutes=1440&results=${Math.min(results, 8000)}`;
   const res = await axios.get(url, { timeout: 8000 });
   return Array.isArray(res.data?.feeds) ? res.data.feeds : [];
 };

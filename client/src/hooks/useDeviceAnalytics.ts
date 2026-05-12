@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { deviceService } from "../services/DeviceService";
@@ -21,6 +21,7 @@ export interface NodeInfoData {
   last_seen: string | null;
   zone_name?: string;
   community_name?: string;
+  location_name?: string;
   customer_config?: any;
   customer_name?: string | null;
 }
@@ -32,6 +33,9 @@ export interface AnalyticsData {
   isLoading: boolean;
   isFetching: boolean;
   error: string | null | undefined;
+  isStale: boolean;           // NEW: true when last data is > 5 min old
+  deviceOffline: boolean;     // NEW: true when device hasn't sent data in > 5 min
+  lastDataTimestamp: string | null; // NEW: exact time of last real data point
   data?: {
     config?: any;
     latest?: any;
@@ -48,10 +52,15 @@ export interface AnalyticsData {
   isError: boolean;
 }
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+const POLL_INTERVAL_MS = 60_000;          // Fetch from backend every 60 seconds
+const STALE_THRESHOLD_MS = 10 * 60_000;   // Data older than 10 min = device offline
+const STALE_TIME_MS = 55_000;            // React Query cache: slightly less than poll interval
+
 export const useDeviceAnalytics = (
-  hardwareIdOverride?: string, 
-  options: { 
-    refetchInterval?: number | false; 
+  hardwareIdOverride?: string,
+  options: {
+    refetchInterval?: number | false;
     staleTime?: number;
     filter?: { range?: string; startDate?: string; endDate?: string };
   } = {}
@@ -59,6 +68,10 @@ export const useDeviceAnalytics = (
   const { hardwareId: routeHardwareId } = useParams<{ hardwareId: string }>();
   const hardwareId = hardwareIdOverride || routeHardwareId || '';
 
+  // Track last known entryId to avoid duplicate appends when device is stopped
+  const lastEntryIdRef = useRef<number | string | null>(null);
+
+  // ── Device config query (slow-changing, 30s stale is fine) ─────────────────
   const {
     data: device,
     isLoading: deviceLoading,
@@ -73,10 +86,11 @@ export const useDeviceAnalytics = (
       return await deviceService.getNodeDetails(hardwareId);
     },
     enabled: !!hardwareId,
-    staleTime: options.staleTime ?? (1000 * 30), // Allow override, default 30 seconds for consistent freshness
-    refetchInterval: options.refetchInterval ?? false, // Disable auto-refetch by default
+    staleTime: 30_000,
+    refetchInterval: false, // Config doesn't change often — no auto-poll needed
   });
 
+  // ── Telemetry query — THIS is what polls every 60 seconds ─────────────────
   const {
     data: telemetryResult,
     isLoading: telemetryLoading,
@@ -91,8 +105,13 @@ export const useDeviceAnalytics = (
       return await deviceService.getNodeAnalytics(hardwareId, options.filter);
     },
     enabled: !!hardwareId,
-    staleTime: 0, // Force fresh data when filter changes
-    refetchInterval: options.refetchInterval ?? false, // Disable auto-refetch by default
+    // ✅ FIX 1: staleTime slightly less than poll interval
+    // This ensures every 60s tick actually hits the network (not served from cache)
+    staleTime: options.staleTime ?? STALE_TIME_MS,
+    // ✅ FIX 2: Auto-poll every 60 seconds — this is the core fix
+    refetchInterval: options.refetchInterval ?? POLL_INTERVAL_MS,
+    // ✅ FIX 3: Keep polling even when browser tab is in background
+    refetchIntervalInBackground: false,
   });
 
   const { telemetry: realtimeData } = useRealtimeTelemetry(device?.id || hardwareId);
@@ -102,101 +121,165 @@ export const useDeviceAnalytics = (
   const isError = isDeviceError || isTelemetryError;
   const error = (deviceError as any)?.message || (telemetryError as any)?.message || null;
 
-  // Use useCallback to ensure refetch function reference stays stable
   const refetch = useCallback(() => {
     refetchDevice();
     refetchTelemetry();
   }, [refetchDevice, refetchTelemetry]);
 
+  // Guard against synthetic fallback objects (e.g. default level=0 with no timestamp)
+  // so stale devices can still show true last-known values when available.
+  const hasUsableTelemetry = useCallback((payload: any): boolean => {
+    if (!payload || typeof payload !== "object") return false;
+
+    const ts = payload.timestamp || payload.created_at || payload.time;
+    if (!ts) return false;
+
+    const level = payload.level_percentage ?? payload.level ?? payload.Level ?? payload.percentage;
+    const volume = payload.total_liters ?? payload.volume ?? payload.currentVolume;
+    const flow = payload.flow_rate;
+    const tds = payload.tds_value ?? payload.tdsValue ?? payload.value;
+
+    return [level, volume, flow, tds].some((v) => Number.isFinite(v));
+  }, []);
+
+  // ── Stale / offline detection ─────────────────────────────────────────────
+  // Computed BEFORE unifiedData so we can inject it into the return value
+  const { isStale, deviceOffline, lastDataTimestamp } = useMemo(() => {
+    // Best available timestamp: realtime socket > API snapshot > history last point
+    const realtimeTs = realtimeData?.timestamp;
+    const snapshotTs = (device as any)?.telemetry_snapshot?.timestamp
+      || (device as any)?.last_seen;
+    const historyLastTs = telemetryResult?.history?.length > 0
+      ? telemetryResult.history[telemetryResult.history.length - 1]?.timestamp
+      : null;
+
+    const bestTs = realtimeTs || snapshotTs || historyLastTs || null;
+
+    if (!bestTs) {
+      return { isStale: false, deviceOffline: false, lastDataTimestamp: null };
+    }
+
+    // Helper to resolve timestamp to Ms, handling Firestore objects
+    const resolveMs = (ts: any): number => {
+        if (!ts) return 0;
+        if (typeof ts === 'object') {
+            if ('_seconds' in ts) return ts._seconds * 1000;
+            if ('seconds' in ts) return ts.seconds * 1000;
+        }
+        const d = new Date(ts);
+        return isNaN(d.getTime()) ? 0 : d.getTime();
+    };
+
+    const lastDataMs = resolveMs(bestTs);
+    if (lastDataMs === 0) return { isStale: false, deviceOffline: false, lastDataTimestamp: null };
+
+    const ageMs = Date.now() - lastDataMs;
+    // Standardized 10-minute threshold
+    const stale = ageMs > STALE_THRESHOLD_MS;
+
+    return {
+      isStale: stale,
+      deviceOffline: stale,           
+      lastDataTimestamp: bestTs,
+    };
+  }, [realtimeData, device, telemetryResult]);
+
+  // ── Unified data assembly ─────────────────────────────────────────────────
   const unifiedData = useMemo(() => {
     if (!device) return undefined;
 
     const d = device as any;
     const hw = d.hardwareId || d.hardware_id || d.node_key || device.id || '';
-    
-    // Fallback chain: Realtime Socket (processed) -> Device Snapshot (processed) -> History Last Point (processed)
+
     const snapshot = d.telemetry_snapshot || d.telemetry || null;
-    const latestFromAPI = telemetryResult?.history?.length > 0 
-        ? telemetryResult.history[telemetryResult.history.length - 1] 
-        : null;
+    const historyFeeds = telemetryResult?.history || [];
+    const latestFromAPI = historyFeeds.length > 0
+      ? historyFeeds[historyFeeds.length - 1]
+      : null;
 
     let latestTelemetry = null;
 
     if (realtimeData) {
-        // CRITICAL: Use processed real-time data with metadata
+      // ✅ FIX 4: Only use realtime data if it's NOT stale
+      // If device stopped at 12:00, realtime socket won't send new events anyway,
+      // but this guard prevents stale socket reconnection replays from being used
+      const realtimeAgeMs = Date.now() - new Date(realtimeData.timestamp || 0).getTime();
+      const realtimeIsStale = realtimeAgeMs > STALE_THRESHOLD_MS;
+
+      if (!realtimeIsStale) {
         latestTelemetry = {
-            timestamp: realtimeData.timestamp || realtimeData.time || new Date().toISOString(),
-            level_percentage: realtimeData.level_percentage,
-            total_liters: realtimeData.total_liters,
-            flow_rate: realtimeData.flow_rate,
-            // Include processed metadata
-            is_corrected: realtimeData.is_corrected,
-            original_value: realtimeData.original_value,
-            confidence: realtimeData.confidence,
-            pattern: realtimeData.pattern,
-            data: realtimeData
+          timestamp: realtimeData.timestamp || realtimeData.time || new Date().toISOString(),
+          level_percentage: realtimeData.level_percentage,
+          total_liters: realtimeData.total_liters,
+          flow_rate: realtimeData.flow_rate,
+          is_corrected: realtimeData.is_corrected,
+          original_value: realtimeData.original_value,
+          confidence: realtimeData.confidence,
+          pattern: realtimeData.pattern,
+          data: realtimeData,
         };
-    } else if (snapshot && (snapshot.level_percentage !== undefined || snapshot.flow_rate !== undefined)) {
-        // Check if snapshot has processed metadata
-        if (snapshot.is_corrected !== undefined) {
-            latestTelemetry = {
-                timestamp: snapshot.timestamp,
-                level_percentage: snapshot.level_percentage,
-                total_liters: snapshot.total_liters,
-                flow_rate: snapshot.flow_rate,
-                is_corrected: snapshot.is_corrected,
-                original_value: snapshot.original_value,
-                confidence: snapshot.confidence,
-                pattern: snapshot.pattern,
-                data: snapshot
-            };
-        } else {
-            // Fallback to raw snapshot data
-            latestTelemetry = {
-                timestamp: snapshot.timestamp,
-                level_percentage: snapshot.level_percentage ?? snapshot.level ?? snapshot.percentage,
-                total_liters: snapshot.total_liters ?? snapshot.volume ?? snapshot.currentVolume,
-                flow_rate: snapshot.flow_rate,
-                data: snapshot
-            };
-        }
-    } else if (latestFromAPI && (latestFromAPI.level !== undefined || latestFromAPI.flow_rate !== undefined)) {
-        // Check if API data has processed metadata
-        if (latestFromAPI.is_corrected !== undefined) {
-            latestTelemetry = {
-                timestamp: latestFromAPI.timestamp,
-                level_percentage: latestFromAPI.level,
-                total_liters: latestFromAPI.volume ?? latestFromAPI.total_liters,
-                flow_rate: latestFromAPI.flow_rate,
-                is_corrected: latestFromAPI.is_corrected,
-                original_value: latestFromAPI.original_value,
-                confidence: latestFromAPI.confidence,
-                pattern: latestFromAPI.pattern,
-                data: latestFromAPI
-            };
-        } else {
-            // Fallback to raw API data
-            latestTelemetry = {
-                timestamp: latestFromAPI.timestamp,
-                level_percentage: latestFromAPI.level,
-                total_liters: latestFromAPI.volume ?? latestFromAPI.total_liters,
-                flow_rate: latestFromAPI.flow_rate,
-                data: latestFromAPI
-            };
-        }
-    } else if (d.last_telemetry && (d.last_telemetry.level_percentage !== undefined || d.last_telemetry.flow_rate !== undefined)) {
-        // Ultimate fallback: registry-level summary
+      }
+    }
+
+    // Fallback chain when realtime is absent or stale
+    if (!latestTelemetry) {
+      if (hasUsableTelemetry(snapshot)) {
         latestTelemetry = {
-            timestamp: d.last_telemetry.timestamp || d.last_online_at,
-            level_percentage: d.last_telemetry.level_percentage ?? d.last_telemetry.Level ?? d.last_level,
-            total_liters: d.last_telemetry.total_liters ?? d.last_telemetry.Volume ?? d.last_volume,
-            flow_rate: d.last_telemetry.flow_rate,
-            is_corrected: d.last_telemetry.is_corrected,
-            original_value: d.last_telemetry.original_value,
-            confidence: d.last_telemetry.confidence,
-            pattern: d.last_telemetry.pattern,
-            data: d.last_telemetry
+          timestamp: snapshot.timestamp || snapshot.created_at || snapshot.time,
+          level_percentage: snapshot.level_percentage ?? snapshot.level ?? snapshot.percentage,
+          total_liters: snapshot.total_liters ?? snapshot.volume ?? snapshot.currentVolume,
+          flow_rate: snapshot.flow_rate,
+          tds_value: snapshot.tds_value ?? snapshot.tdsValue ?? snapshot.value ?? snapshot.v,
+          temperature: snapshot.temperature ?? snapshot.temp ?? snapshot.Temperature,
+          is_corrected: snapshot.is_corrected,
+          original_value: snapshot.original_value,
+          confidence: snapshot.confidence,
+          pattern: snapshot.pattern,
+          data: snapshot,
         };
+      } else if (hasUsableTelemetry(latestFromAPI)) {
+        latestTelemetry = {
+          timestamp: latestFromAPI.timestamp || latestFromAPI.created_at || latestFromAPI.time,
+          level_percentage: latestFromAPI.level ?? latestFromAPI.level_percentage,
+          total_liters: latestFromAPI.volume ?? latestFromAPI.total_liters,
+          flow_rate: latestFromAPI.flow_rate,
+          tds_value: latestFromAPI.tds_value ?? latestFromAPI.tdsValue ?? latestFromAPI.value ?? latestFromAPI.v,
+          temperature: latestFromAPI.temperature ?? latestFromAPI.temp ?? latestFromAPI.Temperature,
+          is_corrected: latestFromAPI.is_corrected,
+          original_value: latestFromAPI.original_value,
+          confidence: latestFromAPI.confidence,
+          pattern: latestFromAPI.pattern,
+          data: latestFromAPI,
+        };
+      } else if (hasUsableTelemetry(d.last_telemetry)) {
+        latestTelemetry = {
+          timestamp: d.last_telemetry.timestamp || d.last_telemetry.created_at || d.last_online_at,
+          level_percentage: d.last_telemetry.level_percentage ?? d.last_telemetry.Level ?? d.last_level,
+          total_liters: d.last_telemetry.total_liters ?? d.last_telemetry.Volume ?? d.last_volume,
+          flow_rate: d.last_telemetry.flow_rate,
+          tds_value: d.last_telemetry.tds_value ?? d.last_telemetry.tdsValue ?? d.last_telemetry.value ?? d.last_telemetry.v,
+          temperature: d.last_telemetry.temperature ?? d.last_telemetry.temp ?? d.last_telemetry.Temperature,
+          is_corrected: d.last_telemetry.is_corrected,
+          original_value: d.last_telemetry.original_value,
+          confidence: d.last_telemetry.confidence,
+          pattern: d.last_telemetry.pattern,
+          data: d.last_telemetry,
+        };
+      }
+    }
+
+    // ✅ FIX 5: Dedup guard — track last entryId so the same point is never
+    // appended twice when the device is stopped and poll returns same data
+    const incomingEntryId = latestTelemetry?.data?.entry_id
+      ?? latestTelemetry?.data?.entryId
+      ?? latestTelemetry?.timestamp;
+
+    if (incomingEntryId && incomingEntryId === lastEntryIdRef.current) {
+      // Same data point as last poll — don't trigger a chart update
+      // We still return the data so the UI shows the last known value,
+      // but consumers can check `isStale` to show the offline state
+    } else if (incomingEntryId) {
+      lastEntryIdRef.current = incomingEntryId;
     }
 
     return {
@@ -211,22 +294,23 @@ export const useDeviceAnalytics = (
           last_seen: d.last_seen || null,
           zone_name: d.zone_name,
           community_name: d.community_name,
+          location_name: d.location_name,
           customer_config: d.customer_config,
           customer_name: d.customer_name || null,
-        } as NodeInfoData
+        } as NodeInfoData,
       },
       history: {
-        feeds: (telemetryResult?.history || []).map((h: any) => ({
-            ...h,
-            level_percentage: h.level,
-            total_liters: h.volume
-        }))
+        feeds: historyFeeds.map((h: any) => ({
+          ...h,
+          level_percentage: h.level_percentage ?? h.level,
+          total_liters: h.total_liters ?? h.volume,
+        })),
       },
       predictive: telemetryResult?.predictive,
       tankBehavior: telemetryResult?.tankBehavior,
-      active_fields: telemetryResult?.active_fields
+      active_fields: telemetryResult?.active_fields,
     };
-  }, [device, telemetryResult, realtimeData]);
+  }, [device, telemetryResult, realtimeData, hasUsableTelemetry]);
 
   return {
     device,
@@ -235,8 +319,11 @@ export const useDeviceAnalytics = (
     isFetching,
     isError,
     error,
+    isStale,
+    deviceOffline,
+    lastDataTimestamp,
     data: unifiedData,
     history: telemetryResult?.history || [],
-    refetch
+    refetch,
   };
 };

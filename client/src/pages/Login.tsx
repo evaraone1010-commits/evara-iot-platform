@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import {
   Eye,
@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { useAuth } from "../context/AuthContext";
+import api from "../services/api";
+import type { Zone } from "../types/entities";
 import type { UserRole } from "../types/database_custom";
 
 type Mode = "signin" | "register";
@@ -25,15 +27,39 @@ const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [zoneId, setZoneId] = useState("");
+  const [zones, setZones] = useState<Zone[]>([]);
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const navigate = useNavigate();
   const { login: loginFn, signup: signupFn, user, isAuthenticated } = useAuth();
+  const isSuperAdmin = selectedRole === "superadmin";
 
-  // If already logged in, redirect away from login page
-  if (isAuthenticated && user) {
+  useEffect(() => {
+    if (mode !== "register" || isSuperAdmin) return;
+
+    let active = true;
+    api.get("/public/zones")
+      .then((response) => {
+        if (!active) return;
+        setZones(Array.isArray(response.data) ? response.data : []);
+      })
+      .catch((err) => {
+        console.error("[Login] Failed to load public zones:", err);
+        if (active) setZones([]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [mode, isSuperAdmin]);
+
+  // If already logged in and not currently in the middle of a login attempt, redirect away
+  // Only redirect if there is no error currently displayed (to handle Access Denied cases)
+  if (isAuthenticated && user && !isLoading && !error) {
     return <Navigate to="/map" replace />;
   }
 
@@ -76,7 +102,7 @@ const Login = () => {
       if (mode === "signin") {
         // Race login against timeout
         const result = (await Promise.race([
-          loginFn(email, password),
+          loginFn(email, password, selectedRole || undefined),
           timeoutPromise,
         ])) as Awaited<ReturnType<typeof loginFn>>;
 
@@ -92,8 +118,23 @@ const Login = () => {
           setIsLoading(false);
           return;
         }
+        if (!phoneNumber.trim()) {
+          setError("Please enter your phone number.");
+          setIsLoading(false);
+          return;
+        }
+        if (!zoneId) {
+          setError("Please select your zone.");
+          setIsLoading(false);
+          return;
+        }
         const result = (await Promise.race([
-          signupFn(email, password, displayName.trim()),
+          signupFn(email, password, displayName.trim(), {
+            full_name: displayName.trim(),
+            phone_number: phoneNumber.trim(),
+            zone_id: zoneId,
+            status: "active",
+          }),
           timeoutPromise,
         ])) as Awaited<ReturnType<typeof signupFn>>;
 
@@ -179,8 +220,6 @@ const Login = () => {
 
   // ─── Render: Credentials Form ────────────────────────────────────────────
 
-  const isSuperAdmin = selectedRole === "superadmin";
-
   return (
     <div className="min-h-screen relative flex items-center justify-center p-4 bg-[#f8fafc] overflow-hidden">
       {/* Modern Mesh Gradient Background Layer */}
@@ -261,6 +300,43 @@ const Login = () => {
                   className="w-full px-4 py-3 rounded-xl border border-[var(--card-border)] apple-glass-inner text-[var(--text-primary)] text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 transition-all font-medium placeholder:text-[var(--text-muted)]/50"
                   required
                 />
+              </div>
+            )}
+
+            {mode === "register" && !isSuperAdmin && (
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-primary)] uppercase tracking-wide mb-2 opacity-70">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  placeholder="+91 98765 43210"
+                  className="w-full px-4 py-3 rounded-xl border border-[var(--card-border)] apple-glass-inner text-[var(--text-primary)] text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 transition-all font-medium placeholder:text-[var(--text-muted)]/50"
+                  required
+                />
+              </div>
+            )}
+
+            {mode === "register" && !isSuperAdmin && (
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-primary)] uppercase tracking-wide mb-2 opacity-70">
+                  Zone
+                </label>
+                <select
+                  value={zoneId}
+                  onChange={(e) => setZoneId(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-[var(--card-border)] apple-glass-inner text-[var(--text-primary)] text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 transition-all font-medium"
+                  required
+                >
+                  <option value="">Select your zone...</option>
+                  {zones.map((zone) => (
+                    <option key={zone.id} value={zone.id}>
+                      {zone.zoneName}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
 

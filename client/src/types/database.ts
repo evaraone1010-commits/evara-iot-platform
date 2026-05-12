@@ -1006,11 +1006,11 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      analytics_type: ["EvaraTank", "EvaraDeep", "EvaraFlow"],
-      device_category: ["EvaraTank", "EvaraDeep", "EvaraFlow"],
-      device_classification: ["EvaraTank", "EvaraDeep", "EvaraFlow"],
+      analytics_type: ["EvaraTank", "EvaraDeep", "EvaraFlow", "EvaraTDS"],
+      device_category: ["EvaraTank", "EvaraDeep", "EvaraFlow", "EvaraTDS"],
+      device_classification: ["EvaraTank", "EvaraDeep", "EvaraFlow", "EvaraTDS"],
       node_asset_type: ["tank", "sump", "borewell", "well", "flow_meter"],
-      node_category: ["OHT", "Sump", "Borewell", "GovtBorewell", "PumpHouse"],
+      node_category: ["OHT", "Sump", "Borewell", "GovtBorewell", "PumpHouse", "EvaraTDS"],
       period_type: ["hourly", "daily", "weekly", "monthly"],
       user_plan: ["base", "plus", "pro"],
       user_role: ["superadmin", "distributor", "customer"],
@@ -1067,8 +1067,9 @@ export type NodeCategory =
   | "Borewell"
   | "GovtBorewell"
   | "PumpHouse"
-  | "FlowMeter";
-export type AnalyticsType = "EvaraTank" | "EvaraDeep" | "EvaraFlow";
+  | "FlowMeter"
+  | "EvaraTDS";
+export type AnalyticsType = "EvaraTank" | "EvaraDeep" | "EvaraFlow" | "EvaraTDS";
 
 // Stub types for tables that are not yet in the schema but referenced in the codebase
 export interface AlertRule {

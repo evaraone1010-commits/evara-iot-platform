@@ -22,6 +22,7 @@
 
 const { db } = require("../config/firebase.js");
 const logger = require("./logger.js");
+const sanitizeForFirestore = require("./sanitizeForFirestore.js");
 
 /**
  * Fire-and-forget audit logging
@@ -34,13 +35,14 @@ function logAudit(userId, action, resourceType, resourceId, metadata = {}) {
     }
 
     // Fire in background - don't await, don't block response
+    const safeMetadata = sanitizeForFirestore(metadata) || {};
     db.collection("audit_logs").add({
         user_id: userId,
         action: action.toUpperCase(), // CREATE, UPDATE, DELETE, READ
         resource_type: resourceType,
         resource_id: resourceId,
         timestamp: new Date(),
-        metadata: metadata || {},
+        metadata: safeMetadata,
         server_time: new Date().getTime()
     }).catch(err => {
         // Audit log failure shouldn't crash app

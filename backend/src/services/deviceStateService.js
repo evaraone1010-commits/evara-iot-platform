@@ -52,7 +52,7 @@ const calculateDeviceStatus = (lastUpdatedAt) => {
     const isSameDay = lastDataDate === currentDate;
     
     if (isSameDay) {
-      if (timeDiffMinutes <= 20) {
+      if (timeDiffMinutes <= (OFFLINE_THRESHOLD_MS / 60000)) {
         return DEVICE_STATUS.ONLINE;
       } else {
         return DEVICE_STATUS.OFFLINE_RECENT;
@@ -145,7 +145,7 @@ const processThingSpeakData = async (device, feeds) => {
     if (channelMetadata) {
       logger.debug(`[DeviceState] FLOW: Resolving using channel metadata + sensor_field_mapping`);
       flowField = resolveFieldByName(channelMetadata, mapping, "flow_rate");
-      totalField = resolveFieldByName(channelMetadata, mapping, "total_reading");
+      totalField = resolveFieldByName(channelMetadata, mapping, "total_liters");
       if (flowField && totalField) {
         logger.debug(`[DeviceState] ✅ Resolved FLOW using stable anchor: flow=${flowField}, total=${totalField}`);
       } else {
@@ -157,17 +157,17 @@ const processThingSpeakData = async (device, feeds) => {
     if (!flowField || !totalField) {
       logger.debug(`[DeviceState] FLOW: Using legacy resolution`);
       flowField = flowField || device.flow_rate_field || Object.keys(mapping).find(k => mapping[k] === "flow_rate") || "field3";
-      totalField = totalField || device.meter_reading_field || Object.keys(mapping).find(k => mapping[k] === "total_reading") || "field1";
+      totalField = totalField || device.meter_reading_field || Object.keys(mapping).find(k => mapping[k] === "total_liters") || Object.keys(mapping).find(k => mapping[k] === "total_reading") || "field1";
       logger.debug(`[DeviceState] ✓ Resolved FLOW using legacy: flow=${flowField}, total=${totalField}`);
     }
 
     const flow_rate = parseFloat(latestFeed[flowField] || 0) || 0;
-    const total_reading = parseFloat(latestFeed[totalField] || 0) || 0;
+    const total_liters = parseFloat(latestFeed[totalField] || 0) || 0;
 
     return {
       deviceId: device.id,
       flow_rate,
-      total_reading,
+      total_liters,
       lastUpdatedAt,
       status,
       raw_data: latestFeed,
@@ -354,15 +354,16 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
     };
 
     const now = new Date().toISOString();
+    const dataTs = telemetryData.lastUpdatedAt || now;
     
     const updatePayload = cleanObject({
-      // ✅ CRITICAL: Update last_seen when data comes in
+      // ✅ CRITICAL: Update last_seen with ACTUAL data timestamp
       // This is what frontend uses to determine Online/Offline status
-      last_seen: now,
-      last_updated_at: telemetryData.lastUpdatedAt,
-      lastUpdatedAt: telemetryData.lastUpdatedAt,
+      last_seen: dataTs,
+      last_updated_at: dataTs,
+      lastUpdatedAt: dataTs,
       status: telemetryData.status,
-      lastTelemetryFetch: now,
+      lastTelemetryFetch: now, // This remains 'now' as it's the fetch event time
       raw_data: telemetryData.raw_data,
       device_type: deviceType,
       customer_id: device.customer_id || device.customerId || null,
@@ -384,7 +385,7 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
       tds_value: telemetryData.tds_value || 0,
       temperature: telemetryData.temperature || 0,
       water_quality: telemetryData.water_quality || "Good",
-      timestamp: now,  // Use current time when data arrives
+      timestamp: dataTs,  // Use actual data time
       status: telemetryData.status,
       waterState: telemetryData.waterState || 'STABLE',
       rateLitresPerMin: telemetryData.rateLitresPerMin || 0,
@@ -423,9 +424,9 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
     
     // Standardized registry update
     const registryUpdateObj = cleanObject({
-        last_seen: now,
-        last_updated_at: telemetryData.lastUpdatedAt,
-        lastUpdatedAt: telemetryData.lastUpdatedAt,
+        last_seen: dataTs,
+        last_updated_at: dataTs,
+        lastUpdatedAt: dataTs,
         status: telemetryData.status,
       customer_id: device.customer_id || device.customerId || null,
       community_id: device.community_id || device.communityId || null,
@@ -445,7 +446,7 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
             waterQualityRating: telemetryData.water_quality,
             tds_history: (updatePayload.tdsHistory || []).slice(0, 10), // Sync last 10 points for sparklines
             
-            timestamp: now
+            timestamp: dataTs
         })
     });
 
@@ -455,7 +456,7 @@ const updateFirestoreTelemetry = async (deviceType, deviceId, telemetryData, fee
     await cache.set(`telemetry:${deviceId}`, updatePayload.telemetry_snapshot, 120);
 
     await Promise.all([updateMetadata, updateRegistry]);
-    logger.debug(`[DeviceState] ✅ Updated telemetry for ${deviceId}: status=${telemetryData.status}, last_seen=${now}`);
+    logger.debug(`[DeviceState] ✅ Updated telemetry for ${deviceId}: status=${telemetryData.status}, last_seen=${dataTs}`);
   } catch (err) {
     logger.error(`[DeviceState] Firestore update failed for ${deviceId}:`, err.message);
     throw err;

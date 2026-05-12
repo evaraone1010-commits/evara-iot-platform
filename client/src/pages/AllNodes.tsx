@@ -21,6 +21,7 @@ import { getDeviceAnalyticsRoute } from "../utils/deviceRouting";
 import { socket } from "../services/api";
 import { computeDeviceStatus } from "../services/DeviceService";
 import { getTankLevel } from "../utils/telemetryPipeline";
+import { computeTdsDeviceStatus, isTdsDevice, normalizeStatus } from "../utils/tdsStatus";
 import TDSCard from "../components/dashboard/TDSCard";
 
 type NodeCategory =
@@ -39,7 +40,7 @@ type AnalyticsType = 'EvaraTank' | 'EvaraFlow' | 'EvaraDeep' | 'EvaraTDS';
 
 // ─── Category config ─────────────────────────────────────────────────────────
 
-export const CATEGORY_CONFIG: Record<
+const CATEGORY_CONFIG: Record<
   NodeCategory,
   {
     label: string;
@@ -200,8 +201,7 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
 
   // DRIVER FIX: Compute status in real-time using the same logic as Analytics pages
   const realtimeSnapshot = realtimeStatuses[node.id];
-  const effectiveLastSeen = realtimeSnapshot?.timestamp || realtimeSnapshot?.created_at || node.last_seen || node.last_online_at || node.updated_at || null;
-  const currentStatus = computeDeviceStatus(effectiveLastSeen);
+  const currentStatus = getNodeStatus(node, realtimeStatuses);
   const isOnline = currentStatus === "Online";
   const isTank = ["evaratank", "EvaraTank", "tank", "sump", "OHT", "Sump"].includes((node.category || node.asset_type || "").toString());
   const isFlow = node.analytics_template === 'EvaraFlow' || (node.category || "").toString() === 'EvaraFlow' || (node.category || "").toString() === 'flow' || (node.category || "").toString() === 'FlowMeter';
@@ -296,8 +296,8 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
                 <div className="text-[10px] font-black uppercase mt-1 tracking-wider leading-none card-number" style={{ color: 'var(--text-muted)' }}>m³/hr</div>
               </div>
               {/* Sparkline Overlay */}
-              <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
+              <div className="absolute inset-x-0 bottom-0 h-[40px] w-full min-w-0 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
+                <ResponsiveContainer width="100%" height={40} minWidth={0}>
                   <AreaChart data={generateMockHistory(lastTel.flow_rate || 10)}>
                     <defs>
                       <linearGradient id="colorFlow" x1="0" y1="0" x2="0" y2="1">
@@ -331,8 +331,8 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
                 <div className="text-[10px] font-black uppercase mt-1 tracking-wider leading-none card-number" style={{ color: 'var(--text-muted)' }}>liters</div>
               </div>
               {/* Sparkline Overlay */}
-              <div className="absolute inset-x-0 bottom-0 h-10 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
-                <ResponsiveContainer width="100%" height="100%" minHeight={40}>
+              <div className="absolute inset-x-0 bottom-0 h-[40px] w-full min-w-0 opacity-30 group-hover/tile:opacity-60 transition-opacity pointer-events-none">
+                <ResponsiveContainer width="100%" height={40} minWidth={0}>
                   <AreaChart data={generateMockHistory(20, 10)}>
                     <defs>
                       <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
@@ -402,6 +402,31 @@ const NodeCardItem = ({ node, realtimeStatuses }: { node: any, realtimeStatuses:
 
 const getNodeCardKey = (node: any) => node.hardwareId || node.node_key || node.id;
 
+const getNodeStatus = (node: any, realtimeStatuses: Record<string, any>): 'Online' | 'Offline' => {
+  const snapshot = realtimeStatuses[node.id] || {};
+  const explicitStatus = normalizeStatus(
+    snapshot.status || snapshot.connection_status || node.status || node.connection_status,
+  );
+  if (explicitStatus) return explicitStatus;
+
+  const effectiveLastSeen =
+    snapshot.timestamp ||
+    snapshot.created_at ||
+    snapshot.last_seen ||
+    node.last_telemetry?.timestamp ||
+    node.last_telemetry?.created_at ||
+    node.last_seen ||
+    node.last_online_at ||
+    node.updated_at ||
+    null;
+
+  if (isTdsDevice(node)) {
+    return computeTdsDeviceStatus(effectiveLastSeen);
+  }
+
+  return computeDeviceStatus(effectiveLastSeen);
+};
+
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -450,9 +475,7 @@ const AllNodes = () => {
       analyticsFilter === "all" || n.analytics_template === analyticsFilter;
 
     // Consistent status calculation for filtering
-    const snapshot = realtimeStatuses[n.id] || n || {};
-    const effectiveLastSeen = snapshot.timestamp || snapshot.created_at || n.last_seen || n.last_online_at || n.updated_at || null;
-    const currentStatus = computeDeviceStatus(effectiveLastSeen);
+    const currentStatus = getNodeStatus(n, realtimeStatuses);
     const matchStatus = statusFilter === "all" || currentStatus === statusFilter;
     const q = search.toLowerCase();
     const matchSearch =
@@ -461,14 +484,10 @@ const AllNodes = () => {
       (n.location_name || "").toLowerCase().includes(q) ||
       n.node_key.toLowerCase().includes(q);
     return matchAnalytics && matchStatus && matchSearch;
-  }), [nodes, analyticsFilter, statusFilter, search]);
+  }), [nodes, analyticsFilter, statusFilter, search, realtimeStatuses]);
 
   const { onlineCount, offlineCount } = useMemo(() => {
-    const statuses = nodes.map(n => {
-      const snap = realtimeStatuses[n.id];
-      const ts = snap?.timestamp || snap?.created_at || n.last_seen || n.last_online_at || n.updated_at || null;
-      return computeDeviceStatus(ts);
-    });
+    const statuses = nodes.map(n => getNodeStatus(n, realtimeStatuses));
     const online = statuses.filter(s => s === "Online").length;
     const offline = statuses.filter(s => s === "Offline").length;
     return { onlineCount: online, offlineCount: offline };

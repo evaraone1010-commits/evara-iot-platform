@@ -4,13 +4,13 @@
 // Solution: Use horizontal scaling (multiple Railway replicas / ECS tasks) + Redis adapter (server.js)
 // for real-time state sharing across instances.
 //
-// For local dev: Use `npm run dev` (nodemon) or `node src/server.js` directly.
+// For local dev: Use `npm run dev` (nodemon) or `node src/bootstrap.js` directly.
 // For production: Use Docker container with single process; orchestrator (K8s/ECS/Railway) manages scaling.
 
 module.exports = {
   apps: [{
     name: "evara-backend",
-    script: "./src/server.js",
+    script: "./src/bootstrap.js",
     instances: 1,        // Single process — scaling handled by deployment platform
     exec_mode: "fork",   // Not cluster mode
     watch: false,

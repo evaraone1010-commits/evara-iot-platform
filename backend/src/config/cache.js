@@ -1,4 +1,3 @@
-const Redis = require("ioredis");
 const logger = require("../utils/logger");
 // ─── #20 FIX: Redis authentication and TLS ───────────────────────────────────
 // ORIGINAL BUG: Redis was created with only a URL — no password, no TLS.
@@ -37,7 +36,12 @@ function buildRedisOptions() {
 class MemoryCache {
     constructor() {
         this.store = new Map();
-        this.cleanupInterval = setInterval(() => this._cleanup(), 60_000);
+        // Avoid creating long-running intervals during tests which keep Jest from exiting.
+        if (process.env.NODE_ENV !== 'test') {
+            this.cleanupInterval = setInterval(() => this._cleanup(), 60_000);
+        } else {
+            this.cleanupInterval = null;
+        }
     }
     get(key) {
         const entry = this.store.get(key);
@@ -79,6 +83,7 @@ class CacheProvider {
         const redisUrl = process.env.REDIS_URL;
         if (redisUrl) {
             try {
+                const Redis = require("ioredis");
                 this.redis = new Redis(redisUrl, buildRedisOptions());
 
                 this.redis.on("connect", () => {
@@ -112,7 +117,7 @@ class CacheProvider {
                 logger.error("[Cache] REDIS_URL not set in production");
                 process.exit(1);
             }
-            logger.warn("[Cache] REDIS_URL not set — using in-memory cache (not suitable for production)");
+            logger.info("[Cache] REDIS_URL not set — using in-memory cache (development mode)");
         }
     }
 
@@ -193,6 +198,7 @@ class CacheProvider {
 
         // ioredis requires SEPARATE connections for pub and sub — reusing the
         // main connection causes "ERR Connection in subscribe mode" errors.
+        const Redis = require("ioredis");
         const opts = buildRedisOptions();
         const pub = new Redis(process.env.REDIS_URL, opts);
         const sub = new Redis(process.env.REDIS_URL, opts);

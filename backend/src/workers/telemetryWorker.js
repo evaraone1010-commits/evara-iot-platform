@@ -187,12 +187,12 @@ async function processDevice(device) {
         await deviceState.updateFirestoreTelemetry(device.type, device.id, telemetryData, feeds, device);
 
         // ✅ CRITICAL: Also update registry with latest last_seen so status is consistent everywhere
-        const now = new Date().toISOString();
+        const dataTs = telemetryData.lastUpdatedAt || new Date().toISOString();
         await db.collection("devices").doc(device.id).update({
-            last_seen: now,
-            last_updated_at: now,
+            last_seen: dataTs,
+            last_updated_at: dataTs,
             status: telemetryData.status,
-            updated_at: now
+            updated_at: dataTs
         }).catch(err => {
             if (err.code === 'not-found') {
                 logger.warn(`[TelemetryWorker] Registry doc not found for ${device.id}, skipping registry update`);
@@ -211,7 +211,7 @@ async function processDevice(device) {
             level_percentage: telemetryData.percentage, // Include for consistency
             volume: telemetryData.volume,
             flow_rate: telemetryData.flow_rate,
-            total_reading: telemetryData.total_reading,
+            total_liters: telemetryData.total_liters,
             tds_value: telemetryData.tds_value,
             temperature: telemetryData.temperature,
             water_quality: telemetryData.water_quality,
@@ -236,6 +236,11 @@ async function processDevice(device) {
                 : "telemetry updated";
             
         logger.debug(`[TelemetryWorker] Updated ${device.id}: ${detail} (${telemetryData.status})`);
+
+        // ✅ AFTER UPDATE: Invalidate graph cache
+        // So the next request gets fresh data from Firestore aggregated view
+        await cache.del(`graph:${device.id}:6H`);
+        await cache.del(`graph:${device.id}:24H`);
     } catch (err) {
         logger.error(`Error processing device ${device.id}`, err, { category: "telemetry", deviceId: device.id });
     }
@@ -259,7 +264,9 @@ async function runPoll() {
                 return;
             }
         } catch (err) {
-            logger.warn('[TelemetryWorker] Failed acquiring distributed lock, running anyway', { error: err.message, category: "telemetry" });
+            logger.error('[TelemetryWorker] Failed acquiring distributed lock; failing closed to prevent duplicate processing', { error: err.message, category: "telemetry" });
+            pollInProgress = false;
+            return;
         }
     }
 
@@ -320,6 +327,9 @@ function startWorker() {
             logger.error('[TelemetryWorker] Poll cycle failed', { error: err.message, category: 'telemetry' });
         }
     }, POLL_INTERVAL);
+    
+    // ✅ .unref() lets Node.js exit cleanly during ECS SIGTERM/SIGKILL
+    telemetryPollTimer.unref();
     
     // CRITICAL FIX: Start dedicated status cron job (runs every 1 minute)
     startStatusCron();

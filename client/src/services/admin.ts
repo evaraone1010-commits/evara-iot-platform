@@ -69,7 +69,7 @@ class AdminService {
    * Get statistics for all regions.
    */
   async getRegionStats(): Promise<any[]> {
-    const response = await api.get("/stats/zones");
+    const response = await api.get("/stats/zones?refresh=true");
     return response.data;
   }
 

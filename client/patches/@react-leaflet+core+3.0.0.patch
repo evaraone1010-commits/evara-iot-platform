@@ -1,0 +1,13 @@
+diff --git a/node_modules/@react-leaflet/core/lib/component.js b/node_modules/@react-leaflet/core/lib/component.js
+index d1cc750..8fea344 100644
+--- a/node_modules/@react-leaflet/core/lib/component.js
++++ b/node_modules/@react-leaflet/core/lib/component.js
+@@ -6,7 +6,7 @@ export function createContainerComponent(useElement) {
+         const { instance, context } = useElement(props).current;
+         useImperativeHandle(forwardedRef, ()=>instance);
+         const { children } = props;
+-        return children == null ? null : /*#__PURE__*/ React.createElement(LeafletContext, {
++        return children == null ? null : /*#__PURE__*/ React.createElement(LeafletContext.Provider, {
+             value: context
+         }, children);
+     }

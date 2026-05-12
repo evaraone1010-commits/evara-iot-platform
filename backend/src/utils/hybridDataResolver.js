@@ -11,10 +11,84 @@ const TelemetryArchiveService = require("../services/telemetryArchiveService");
 const admin = require("firebase-admin");
 const axios = require("axios");
 const logger = require("../utils/logger");
+const cache = require("../config/cache");
 
 const db = admin.firestore();
 
 class HybridDataResolver {
+  constructor(deviceId) {
+    this.deviceId = deviceId;
+  }
+
+  /**
+   * 1. Try Redis cache first
+   */
+  async getFromCache(window) {
+    const cacheKey = `graph:${this.deviceId}:${window}`;
+    try {
+      const cached = await cache.get(cacheKey);
+      if (cached) {
+        logger.debug(`[HybridResolver] Cache HIT for ${this.deviceId} (${window})`);
+        return cached;
+      }
+    } catch (err) {
+      logger.warn(`[HybridResolver] Cache read error:`, err.message);
+    }
+    return null;
+  }
+
+  /**
+   * 2. Set cache for future requests
+   */
+  async setCache(window, data) {
+    const cacheKey = `graph:${this.deviceId}:${window}`;
+    try {
+      // Cache for 5 minutes
+      await cache.set(cacheKey, data, 300);
+      logger.debug(`[HybridResolver] Cache WARMED for ${this.deviceId} (${window})`);
+    } catch (err) {
+      logger.warn(`[HybridResolver] Cache write error:`, err.message);
+    }
+  }
+
+  /**
+   * 3. Fetch from Firestore (fast recent storage)
+   */
+  async getFromFirestore(window) {
+    const now = new Date();
+    const start = this.getStartTimeForWindow(window);
+    return await HybridDataResolver.fetchFromDatabase(this.deviceId, start, now);
+  }
+
+  /**
+   * 4. Fetch from ThingSpeak (historical fallback)
+   */
+  async getFromThingSpeak(window) {
+    const now = new Date();
+    const start = this.getStartTimeForWindow(window);
+    
+    // Get device credentials
+    const deviceDoc = await db.collection("devices").doc(this.deviceId).get();
+    if (!deviceDoc.exists) return [];
+    
+    let deviceData = deviceDoc.data();
+    if (!deviceData.thingspeak_channel_id && deviceData.device_type) {
+      const metaDoc = await db.collection(deviceData.device_type.toLowerCase()).doc(this.deviceId).get();
+      if (metaDoc.exists) deviceData = { ...deviceData, ...metaDoc.data() };
+    }
+
+    return await HybridDataResolver.fetchFromThingSpeak(deviceData, start, now);
+  }
+
+  /**
+   * Helper to resolve window string to start date
+   */
+  getStartTimeForWindow(window) {
+    const now = new Date();
+    const hours = parseInt(window) || 6; // default 6H
+    return new Date(now.getTime() - hours * 60 * 60 * 1000);
+  }
+
   /**
    * Main resolver: Decide where to fetch data from
    */
@@ -28,7 +102,19 @@ class HybridDataResolver {
         throw new Error(`Device ${deviceId} not found`);
       }
 
-      const device = deviceDoc.data();
+      const registry = deviceDoc.data();
+      let device = { ...registry };
+
+      // ThingSpeak credentials are often stored in the typed collection (e.g., evaratank)
+      // while the 'devices' collection is just a central registry.
+      if (!device.thingspeak_channel_id && registry.device_type) {
+        const type = registry.device_type.toLowerCase();
+        logger.debug(`[HybridDataResolver] Credentials missing in registry, checking typed collection: ${type}`);
+        const metaDoc = await db.collection(type).doc(deviceId).get();
+        if (metaDoc.exists) {
+          device = { ...device, ...metaDoc.data() };
+        }
+      }
       const dataSource = this.determineDataSource(startDate, endDate);
 
       logger.debug(`📍 Data source: ${dataSource}`);
@@ -79,21 +165,9 @@ class HybridDataResolver {
     const policy = TelemetryArchiveService.getRetentionPolicy();
 
     const startDaysAgo = Math.floor((now - startDate) / (1000 * 60 * 60 * 24));
-    const endDaysAgo = Math.floor((now - endDate) / (1000 * 60 * 60 * 24));
-
-    logger.debug(`📊 Date analysis: startDaysAgo=${startDaysAgo}, endDaysAgo=${endDaysAgo}, keepDays=${policy.keepDays}`);
-
-    // All data is within 14-day window → Use database (fastest)
-    if (startDaysAgo <= policy.keepDays) {
-      return "database";
-    }
-
-    // All data is older than 30 days → Use ThingSpeak (will be deleted from DB)
-    if (endDaysAgo > policy.archiveAfterDays) {
-      return "thingspeak";
-    }
-
-    // Data spans across boundary → Use hybrid (both sources)
+    
+    // For reports and exports, always use hybrid to ensure no data is missed
+    // if Firestore collection is empty for certain devices.
     return "hybrid";
   }
 
@@ -130,6 +204,7 @@ class HybridDataResolver {
           ...doc.data(),
           _id: doc.id,
           _source: "database",
+          timestamp: doc.data().timestamp.toDate() // Ensure Date object
         });
       });
 
@@ -159,15 +234,22 @@ class HybridDataResolver {
 
       const url = `https://api.thingspeak.com/channels/${channelId}/feeds.json`;
 
+      // Format dates to ThingSpeak's preferred format: YYYY-MM-DD%20HH:NN:SS
+      const formatDate = (date) => {
+        return date.toISOString();
+      };
+
       const params = {
         api_key: readApiKey,
-        start: startDate.toISOString().split("T")[0],
-        end: endDate.toISOString().split("T")[0],
-        results: options.limit || 8000, // ThingSpeak limit is 8000
+        start: formatDate(startDate),
+        end: formatDate(endDate),
+        results: options.limit || 8000,
         timezone: "Asia/Kolkata",
       };
 
-      const response = await axios.get(url, { params, timeout: 10000 });
+      logger.debug(`[ThingSpeak] Request params:`, params);
+
+      const response = await axios.get(url, { params, timeout: 15000 });
 
       if (!response.data.feeds) {
         logger.warn("⚠️ No feeds in ThingSpeak response");
