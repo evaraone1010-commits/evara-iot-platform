@@ -24,7 +24,8 @@ class RateLimitingService {
     }
 
     return new RedisStore({
-      client: redis,
+      // The new API requires a `sendCommand` function.
+      sendCommand: (...args) => redis.call(...args),
       prefix: 'rl:'
     });
   }
