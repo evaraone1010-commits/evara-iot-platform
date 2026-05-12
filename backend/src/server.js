@@ -79,20 +79,24 @@ async function startServer() {
 
                 // Schedule daily telemetry cleanup (optional)
                 try {
-                    const policy = TelemetryArchiveService.getRetentionPolicy();
-                    const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
-                    telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
-                        if (telemetryCleanupRunning) return;
-                        telemetryCleanupRunning = true;
-                        try {
-                            const result = await TelemetryArchiveService.cleanupOldTelemetry();
-                            if (result.success) await TelemetryArchiveService.logCleanupStats();
-                        } catch (err) {
-                            logger.error({ error: err.message }, '[Server] Cleanup failed');
-                        } finally { 
-                            telemetryCleanupRunning = false; 
-                        }
-                    });
+                    if (TelemetryArchiveService && typeof TelemetryArchiveService.getRetentionPolicy === 'function') {
+                        const policy = TelemetryArchiveService.getRetentionPolicy();
+                        const cleanupTime = `${policy.cleanupHour} ${policy.cleanupMinute} * * *`;
+                        telemetryCleanupJob = schedule.scheduleJob(cleanupTime, async () => {
+                            if (telemetryCleanupRunning) return;
+                            telemetryCleanupRunning = true;
+                            try {
+                                const result = await TelemetryArchiveService.cleanupOldTelemetry();
+                                if (result.success) await TelemetryArchiveService.logCleanupStats();
+                            } catch (err) {
+                                logger.error({ error: err.message }, '[Server] Cleanup failed');
+                            } finally { 
+                                telemetryCleanupRunning = false; 
+                            }
+                        });
+                    } else {
+                        logger.warn('[Server] TelemetryArchiveService not available for cleanup scheduling');
+                    }
                 } catch (err) { 
                     logger.warn({ error: err.message }, '[Server] Cleanup scheduling failed - proceeding without cleanup'); 
                 }
