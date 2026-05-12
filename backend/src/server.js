@@ -6,31 +6,13 @@ const http = require("http");
 const schedule = require("node-schedule");
 const Sentry = require("@sentry/node");
 
-const { app, allowedOrigins } = require("./app.js");
-const { initSocket } = require("./socket.js");
-const validateEnv = require("./utils/validateEnv.js");
+const { initializeFirebase, hasExplicitFirebaseCredentials } = require('./config/firebase-secure');
 const { logger } = require("./config/pino.js");
-const { hasExplicitFirebaseCredentials, getFirebaseCredentialSource } = require("./config/firebase.js");
-const cache = require("./config/cache.js");
-const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
-const TelemetryArchiveService = require("./services/telemetryArchiveService.js");
-const { startWorker } = require("./workers/telemetryWorker.js");
-
-function hasFirestoreConfig() {
-  return hasExplicitFirebaseCredentials();
-}
-
-// ============================================================================
-// Global State
-// ============================================================================
-const TELEMETRY_CLEANUP_LOCK_KEY = "cron:telemetry-cleanup";
-let telemetryCleanupJob = null;
-let telemetryCleanupRunning = false;
-let mqttRuntime = null;
 
 // ============================================================================
 // Pre-flight validation
 // ============================================================================
+const validateEnv = require("./utils/validateEnv.js");
 validateEnv();
 
 if (process.env.SENTRY_DSN) {
@@ -43,54 +25,48 @@ if (process.env.SENTRY_DSN) {
 // ============================================================================
 // Server Initialization
 // ============================================================================
-const server = http.createServer(app);
-const io = initSocket(server, allowedOrigins);
-
-async function tryAcquireDistributedLock(key, ttlSeconds) {
-  if (!cache?.isRedisReady || !cache?.redis) return false;
-  try {
-    const lockValue = `${process.pid}-${Date.now()}`;
-    const acquired = await cache.redis.set(key, lockValue, "EX", ttlSeconds, "NX");
-    return acquired === "OK";
-  } catch (err) {
-    logger.error({ key, error: err.message }, "[Lock] Redis lock acquisition failed");
-    return false;
-  }
-}
-
-function initializeMqttIngestion() {
-  const shouldEnable = process.env.ENABLE_MQTT !== "false";
-  const hasConfig = !!(process.env.MQTT_BROKER_URL && process.env.MQTT_USERNAME && process.env.MQTT_PASSWORD);
-  if (!shouldEnable || !hasConfig) return;
-
-  try {
-    mqttRuntime = require("./services/mqttClient.js");
-    logger.info("[MQTT] Ingestion service initialized");
-  } catch (err) {
-    logger.error("[MQTT] Failed to initialize ingestion service:", err.message);
-    if (process.env.NODE_ENV === "production") process.exit(1);
-  }
-}
-
-// ============================================================================
-// Lifecycle Management
-// ============================================================================
-let PORT = process.env.PORT || 8000;
+let app, allowedOrigins, initSocket, cache, TelemetryArchiveService, startWorker;
+let server;
+let io;
 
 async function startServer() {
   try {
+    // Step 1: Ensure Firebase is initialized before loading any other modules
+    await initializeFirebase();
+    logger.info("[Server] Firebase initialization complete.");
+
+    // Step 2: Now that Firebase is ready, load all other modules
+    const appModule = require("./app.js");
+    app = appModule.app;
+    allowedOrigins = appModule.allowedOrigins;
+    initSocket = require("./socket.js").initSocket;
+    cache = require("./config/cache.js");
+    TelemetryArchiveService = require("./services/telemetryArchiveService.js");
+    startWorker = require("./workers/telemetryWorker.js").startWorker;
+    
+    // Step 3: Create server and initialize sockets
+    server = http.createServer(app);
+    io = initSocket(server, allowedOrigins);
+
+    // Step 4: Run production health checks
     if (process.env.NODE_ENV === 'production') {
       if (process.env.REDIS_URL) await validateEnv.testRedisConnection(5000);
       if (process.env.MQTT_BROKER_URL) await validateEnv.testMqttConnection(5000);
     }
 
+    // Step 5: Start listening for connections
+    const PORT = process.env.PORT || 8000;
     server.listen(PORT, '0.0.0.0', async () => {
         logger.info(`[Server] ✅ Backend running on port ${PORT}`);
         
-        if (process.env.NODE_ENV !== 'test' && hasFirestoreConfig()) {
-          try { await initializeCacheVersions(); } catch (err) { logger.warn({ error: err.message }, '[Server] Cache versioning failed'); }
-        } else if (process.env.NODE_ENV !== 'test') {
-          logger.info(`[Server] Skipping Firestore cache version initialization; Firebase credential source is '${getFirebaseCredentialSource()}'.`);
+        // Step 6: Initialize post-start services
+        if (process.env.NODE_ENV !== 'test' && hasExplicitFirebaseCredentials()) {
+          try { 
+            const { initializeCacheVersions } = require("./utils/cacheVersioning.js");
+            await initializeCacheVersions(); 
+          } catch (err) { 
+            logger.warn({ error: err.message }, '[Server] Cache versioning failed'); 
+          }
         }
 
         // Schedule daily telemetry cleanup
@@ -109,7 +85,7 @@ async function startServer() {
             });
         } catch (err) { logger.error({ error: err.message }, '[Server] Cleanup scheduling failed'); }
         
-        if (process.env.NODE_ENV !== "test" && hasFirestoreConfig()) {
+        if (process.env.NODE_ENV !== "test" && hasExplicitFirebaseCredentials()) {
           initializeMqttIngestion();
           startWorker();
         } else if (process.env.NODE_ENV !== "test") {
