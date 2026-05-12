@@ -30,7 +30,31 @@ function initializeFirebase() {
     try {
       if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
         logger.info('[Firebase] Initializing from GOOGLE_APPLICATION_CREDENTIALS_JSON...');
-        const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+        
+        // Validate that the env var is actually set and not empty
+        const rawCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON.trim();
+        if (!rawCreds) {
+          throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON is set but empty');
+        }
+
+        let serviceAccount;
+        try {
+          serviceAccount = JSON.parse(rawCreds);
+        } catch (jsonErr) {
+          throw new Error(`GOOGLE_APPLICATION_CREDENTIALS_JSON contains invalid JSON: ${jsonErr.message}`);
+        }
+
+        // Validate service account has required fields
+        if (!serviceAccount.project_id) {
+          throw new Error('Service account JSON missing required field: project_id');
+        }
+        if (!serviceAccount.private_key) {
+          throw new Error('Service account JSON missing required field: private_key');
+        }
+        if (!serviceAccount.client_email) {
+          throw new Error('Service account JSON missing required field: client_email');
+        }
+
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount),
           projectId: serviceAccount.project_id,
@@ -66,7 +90,7 @@ function initializeFirebase() {
 
     } catch (err) {
       logger.error(`[Firebase] ❌ Initialization FAILED: ${err.message}`);
-      reject(err);
+      process.exit(1); // Exit immediately with clear error instead of leaving process hanging
     }
   });
 }
