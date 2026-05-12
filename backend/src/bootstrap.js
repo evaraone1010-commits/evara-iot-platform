@@ -1,3 +1,6 @@
+// CRITICAL: Initialize Firebase before any other module is loaded.
+require('./config/firebase-secure');
+
 require('dotenv').config();
 
 const { loadRuntimeSecrets } = require("./config/runtimeSecrets.js");
