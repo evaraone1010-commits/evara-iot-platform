@@ -1,4 +1,7 @@
-require("dotenv").config();
+// Force load .env file for Railway, overriding any other configuration.
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env'), override: true });
+
 const http = require("http");
 const schedule = require("node-schedule");
 const Sentry = require("@sentry/node");
