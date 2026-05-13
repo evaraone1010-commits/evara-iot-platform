@@ -13,7 +13,8 @@
     "build:client": "cd client && npm run build",
     "build": "npm run install:backend && npm run install:client && npm run build:client",
     "start": "cd backend && node src/server.js",
-    "dev": "concurrently \"cd backend && npm run dev\" \"cd client && npm run dev\""
+    "dev": "concurrently \"cd backend && npm run dev\" \"cd client && npm run dev\"",
+    "start:prodlike": "npm run build:client && npm run start"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
