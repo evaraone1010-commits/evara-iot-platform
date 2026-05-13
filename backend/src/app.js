@@ -131,13 +131,8 @@ console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
 if (fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
     
-    // Serve static files (CSS, JS, images, etc) with proper options
-    app.use(express.static(publicPath, {
-        maxAge: '1d',
-        etag: false,
-        // Don't fallback to index.html for missing files
-        fallthrough: false
-    }));
+    // Serve static files (CSS, JS, images, etc)
+    app.use(express.static(publicPath));
 } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
     if (process.env.NODE_ENV === "production") {
@@ -145,44 +140,28 @@ if (fs.existsSync(publicPath)) {
     }
 }
 
-// 404 handler for static files that don't exist
-app.use((err, req, res, next) => {
-    if (err.status === 404 || err.code === 'ENOENT') {
-        console.log(`[StaticFiles] File not found: ${req.url}`);
-        // Continue to next handler (SPA fallback)
-        next();
-    } else {
-        // Real error
-        next(err);
-    }
-});
-
-// SPA Catch-All Route (runs AFTER express.static())
-// Only for HTML page requests, NOT for static files
+// SPA Catch-All Route
+// Only handles non-API, non-file requests
 app.get("*", (req, res, next) => {
     // Skip API and WebSocket routes
     if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
         return next();
     }
     
-    // Skip file requests (has extension)
+    // Skip file requests (has file extension like .js, .css, .png, etc)
     if (/\.\w+$/.test(req.url)) {
+        console.log(`[SPA] Skipping file request: ${req.url}`);
         return next();
     }
     
-    // Serve index.html for SPA routing
+    // Serve index.html for SPA routes
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
-        console.log(`[SPA] Serving index.html for route: ${req.url}`);
-        res.sendFile(indexPath, (err) => {
-            if (err) {
-                console.error(`[SPA] Error sending index.html:`, err.message);
-                next(err);
-            }
-        });
+        console.log(`[SPA] Serving index.html for: ${req.url}`);
+        res.sendFile(indexPath);
     } else {
-        console.error(`[SPA] index.html not found at ${indexPath}`);
-        res.status(404).send("index.html not found");
+        console.error(`[SPA] index.html not found`);
+        res.status(404).send("Not found");
     }
 });
 
