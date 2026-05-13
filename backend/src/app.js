@@ -122,18 +122,26 @@ app.use(/^\/api\/.*/, (req, res, next) => {
 // ============================================================================
 // Static Files & SPA Support
 // ============================================================================
-if (process.env.NODE_ENV === "production") {
-    const publicPath = path.join(__dirname, "../../client/dist");
-    const fs = require("fs");
-    if (fs.existsSync(publicPath)) {
-        app.use(express.static(publicPath));
-        
-        app.get("*", (req, res, next) => {
-            if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
-                return next();
-            }
-            res.sendFile(path.join(publicPath, "index.html"));
-        });
+const publicPath = path.join(__dirname, "../../client/dist");
+const fs = require("fs");
+
+console.log(`[StaticFiles] Looking for dist at: ${publicPath}`);
+console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
+
+if (fs.existsSync(publicPath)) {
+    console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
+    app.use(express.static(publicPath));
+    
+    app.get("*", (req, res, next) => {
+        if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
+            return next();
+        }
+        res.sendFile(path.join(publicPath, "index.html"));
+    });
+} else {
+    console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
+    if (process.env.NODE_ENV === "production") {
+        console.error(`[StaticFiles] 🚨 CRITICAL: In production but dist folder missing!`);
     }
 }
 
