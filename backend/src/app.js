@@ -168,7 +168,14 @@ app.get("*", (req, res, next) => {
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
         console.log(`[SPA] Serving index.html for: ${req.url}`);
-        return res.sendFile(indexPath);
+      // Ensure the SPA index response carries an explicit CSP that allows
+      // Firebase / Google API connections. This overrides any upstream
+      // proxy defaults that may be more restrictive.
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'self'; connect-src 'self' https://*.railway.app wss://*.railway.app https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://firebasestorage.googleapis.com;"
+      );
+      return res.sendFile(indexPath);
     }
     
     console.error(`[SPA] index.html not found at ${indexPath}`);
