@@ -60,7 +60,8 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
 };
 
-app.use(cors(corsOptions));
+// Apply CORS only to API routes. Static asset requests should not pass CORS checks.
+app.use("/api", cors(corsOptions));
 
 // ============================================================================
 // Security Headers (Helmet)
