@@ -6,7 +6,7 @@ async function main() {
     try {
         await loadRuntimeSecrets(); // SECOND - load secrets
     } catch (error) {
-        console.error("[Bootstrap] Failed to load runtime secrets:", error.message);
+        console.error("[Bootstrap] Failed to load runtime secrets:", error.message, error.stack);
         process.exit(1);
     }
 

@@ -89,8 +89,13 @@ function initializeFirebase() {
       resolve();
 
     } catch (err) {
-      logger.error(`[Firebase] ❌ Initialization FAILED: ${err.message}`);
-      process.exit(1); // Exit immediately with clear error instead of leaving process hanging
+      console.error('=== FIREBASE INIT ERROR ===');
+      console.error('Message:', err.message);
+      console.error('Stack:', err.stack);
+      console.error('GOOGLE_APPLICATION_CREDENTIALS_JSON exists:', !!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+      console.error('JSON length:', process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON?.length);
+      console.error('JSON preview:', process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON?.substring(0, 100));
+      process.exit(1);
     }
   });
 }
