@@ -1,18 +1,16 @@
-// CRITICAL: Initialize Firebase before any other module is loaded.
-require('./config/firebase-secure');
-
-require('dotenv').config();
+require('dotenv').config(); // FIRST - load env vars
 
 const { loadRuntimeSecrets } = require("./config/runtimeSecrets.js");
 
 async function main() {
     try {
-        await loadRuntimeSecrets();
+        await loadRuntimeSecrets(); // SECOND - load secrets
     } catch (error) {
         console.error("[Bootstrap] Failed to load runtime secrets:", error.message);
         process.exit(1);
     }
 
+    // THIRD - only now load server (which loads Firebase)
     const serverModule = require("./server.js");
     if (typeof serverModule.startServer === "function") {
         await serverModule.startServer();
