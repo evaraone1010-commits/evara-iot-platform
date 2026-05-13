@@ -131,38 +131,42 @@ console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
 if (fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
     
-    // Serve static files with proper caching headers
+    // Serve static files (CSS, JS, images, etc)
+    // This MUST run before the catch-all route
     app.use(express.static(publicPath, {
-        maxAge: '1h',
+        maxAge: '1d',
         etag: false
     }));
-    
-    // SPA fallback: serve index.html for all routes that aren't static files, API, or websocket
-    app.get("*", (req, res, next) => {
-        // Exclude API routes, websocket, and already-handled static files
-        if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/") || req.url.startsWith("/assets/")) {
-            return next();
-        }
-        
-        // Serve index.html for SPA routing
-        const indexPath = path.join(publicPath, "index.html");
-        if (fs.existsSync(indexPath)) {
-            res.sendFile(indexPath, (err) => {
-                if (err) {
-                    console.error(`[StaticFiles] Error sending index.html:`, err.message);
-                    next(err);
-                }
-            });
-        } else {
-            next(new Error("index.html not found"));
-        }
-    });
 } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
     if (process.env.NODE_ENV === "production") {
         console.error(`[StaticFiles] 🚨 CRITICAL: In production but dist folder missing!`);
     }
 }
+
+// SPA Catch-All Route (runs AFTER express.static())
+// Only handles requests that aren't static files or API routes
+app.get("*", (req, res, next) => {
+    // Skip API and WebSocket routes
+    if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
+        return next();
+    }
+    
+    // Serve index.html for all other routes (SPA routing)
+    const indexPath = path.join(publicPath, "index.html");
+    if (fs.existsSync(indexPath)) {
+        console.log(`[SPA] Serving index.html for route: ${req.url}`);
+        res.sendFile(indexPath, (err) => {
+            if (err) {
+                console.error(`[SPA] Error sending index.html:`, err.message);
+                next(err);
+            }
+        });
+    } else {
+        console.error(`[SPA] index.html not found at ${indexPath}`);
+        next();
+    }
+});
 
 // ============================================================================
 // Sentry Error Handler
