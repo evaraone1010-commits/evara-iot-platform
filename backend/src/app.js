@@ -132,7 +132,7 @@ if (fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
     
     // Serve static files (CSS, JS, images, etc)
-    app.use(express.static(publicPath));
+    app.use(express.static(publicPath, { maxAge: '1d' }));
 } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
     if (process.env.NODE_ENV === "production") {
@@ -140,29 +140,29 @@ if (fs.existsSync(publicPath)) {
     }
 }
 
-// SPA Catch-All Route
-// Only handles non-API, non-file requests
+// SPA Catch-All Route for page navigation
+// This MUST be the last route before error handlers
 app.get("*", (req, res, next) => {
     // Skip API and WebSocket routes
     if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
         return next();
     }
     
-    // Skip file requests (has file extension like .js, .css, .png, etc)
+    // If URL has a file extension, it's a missing static file -> 404
     if (/\.\w+$/.test(req.url)) {
-        console.log(`[SPA] Skipping file request: ${req.url}`);
-        return next();
+        console.log(`[SPA] File not found, returning 404: ${req.url}`);
+        return res.status(404).send("Not Found");
     }
     
-    // Serve index.html for SPA routes
+    // Serve index.html for SPA page navigation
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
         console.log(`[SPA] Serving index.html for: ${req.url}`);
-        res.sendFile(indexPath);
-    } else {
-        console.error(`[SPA] index.html not found`);
-        res.status(404).send("Not found");
+        return res.sendFile(indexPath);
     }
+    
+    console.error(`[SPA] index.html not found at ${indexPath}`);
+    res.status(500).send("Server Error: index.html not found");
 });
 
 // ============================================================================
