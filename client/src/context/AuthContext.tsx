@@ -30,6 +30,31 @@ async function retryWithBackoff<T>(
   }
   throw lastError;
 }
+
+// Retry wrapper specifically for Firebase sign-in to handle transient network failures.
+async function firebaseSignInWithRetry(
+  authObj: any,
+  email: string,
+  password: string,
+  maxAttempts = 3,
+  baseDelayMs = 500,
+): Promise<any> {
+  let lastError: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const credential = await signInWithEmailAndPassword(authObj, email, password);
+      return credential;
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on network-level failures
+      if (err?.code !== 'auth/network-request-failed') break;
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, baseDelayMs * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -207,8 +232,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     ): Promise<{ success: boolean; user?: User; error?: string }> => {
       setLoading(true);
       try {
-        // Step 1: Firebase authentication
-        const credential = await signInWithEmailAndPassword(
+        // Step 1: Firebase authentication (with retry for transient network issues)
+        const credential = await firebaseSignInWithRetry(
           auth,
           email,
           password,
