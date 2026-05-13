@@ -130,13 +130,32 @@ console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
 
 if (fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
-    app.use(express.static(publicPath));
     
+    // Serve static files with proper caching headers
+    app.use(express.static(publicPath, {
+        maxAge: '1h',
+        etag: false
+    }));
+    
+    // SPA fallback: serve index.html for all routes that aren't static files, API, or websocket
     app.get("*", (req, res, next) => {
-        if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
+        // Exclude API routes, websocket, and already-handled static files
+        if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/") || req.url.startsWith("/assets/")) {
             return next();
         }
-        res.sendFile(path.join(publicPath, "index.html"));
+        
+        // Serve index.html for SPA routing
+        const indexPath = path.join(publicPath, "index.html");
+        if (fs.existsSync(indexPath)) {
+            res.sendFile(indexPath, (err) => {
+                if (err) {
+                    console.error(`[StaticFiles] Error sending index.html:`, err.message);
+                    next(err);
+                }
+            });
+        } else {
+            next(new Error("index.html not found"));
+        }
     });
 } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
