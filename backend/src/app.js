@@ -104,8 +104,8 @@ app.use(helmet({
       objectSrc: ["'none'"]
     }
   },
-  crossOriginEmbedderPolicy: true,
-  crossOriginOpenerPolicy: true,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: "unsafe-none" },
   crossOriginResourcePolicy: { policy: "cross-origin" },
   referrerPolicy: { policy: "no-referrer-when-downgrade" }
 }));
