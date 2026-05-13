@@ -131,11 +131,12 @@ console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
 if (fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
     
-    // Serve static files (CSS, JS, images, etc)
-    // This MUST run before the catch-all route
+    // Serve static files (CSS, JS, images, etc) with proper options
     app.use(express.static(publicPath, {
         maxAge: '1d',
-        etag: false
+        etag: false,
+        // Don't fallback to index.html for missing files
+        fallthrough: false
     }));
 } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
@@ -144,15 +145,32 @@ if (fs.existsSync(publicPath)) {
     }
 }
 
+// 404 handler for static files that don't exist
+app.use((err, req, res, next) => {
+    if (err.status === 404 || err.code === 'ENOENT') {
+        console.log(`[StaticFiles] File not found: ${req.url}`);
+        // Continue to next handler (SPA fallback)
+        next();
+    } else {
+        // Real error
+        next(err);
+    }
+});
+
 // SPA Catch-All Route (runs AFTER express.static())
-// Only handles requests that aren't static files or API routes
+// Only for HTML page requests, NOT for static files
 app.get("*", (req, res, next) => {
     // Skip API and WebSocket routes
     if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
         return next();
     }
     
-    // Serve index.html for all other routes (SPA routing)
+    // Skip file requests (has extension)
+    if (/\.\w+$/.test(req.url)) {
+        return next();
+    }
+    
+    // Serve index.html for SPA routing
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
         console.log(`[SPA] Serving index.html for route: ${req.url}`);
@@ -164,7 +182,7 @@ app.get("*", (req, res, next) => {
         });
     } else {
         console.error(`[SPA] index.html not found at ${indexPath}`);
-        next();
+        res.status(404).send("index.html not found");
     }
 });
 
