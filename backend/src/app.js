@@ -149,18 +149,26 @@ app.use(/^\/api\/.*/, (req, res, next) => {
 // ============================================================================
 const publicPath = path.join(__dirname, "../../client/dist");
 const fs = require("fs");
+const isProduction = process.env.NODE_ENV === "production";
+const frontendDevUrl = process.env.FRONTEND_DEV_URL || "http://localhost:8080";
+const shouldServeStaticDist = isProduction || process.env.SERVE_CLIENT_DIST === "true";
 
 console.log(`[StaticFiles] Looking for dist at: ${publicPath}`);
 console.log(`[StaticFiles] NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`[StaticFiles] shouldServeStaticDist: ${shouldServeStaticDist}`);
 
-if (fs.existsSync(publicPath)) {
+if (shouldServeStaticDist && fs.existsSync(publicPath)) {
     console.log(`[StaticFiles] ✅ Found dist folder, serving static files`);
     
     // Serve static files (CSS, JS, images, etc)
-    app.use(express.static(publicPath, { maxAge: '1d' }));
+  app.use(express.static(publicPath, { maxAge: isProduction ? '1d' : 0 }));
 } else {
+  if (!shouldServeStaticDist) {
+    console.log(`[StaticFiles] ℹ️  Development mode: static dist serving disabled (using Vite dev server)`);
+  } else {
     console.warn(`[StaticFiles] ⚠️  dist folder not found at ${publicPath}`);
-    if (process.env.NODE_ENV === "production") {
+  }
+  if (isProduction) {
         console.error(`[StaticFiles] 🚨 CRITICAL: In production but dist folder missing!`);
     }
 }
@@ -172,6 +180,12 @@ app.get("*", (req, res, next) => {
     if (req.url.startsWith("/api/") || req.url.startsWith("/socket.io/")) {
         return next();
     }
+
+  // In local development, always serve the Vite app so UI matches the active frontend code.
+  if (!shouldServeStaticDist) {
+    const targetUrl = `${frontendDevUrl}${req.originalUrl}`;
+    return res.redirect(302, targetUrl);
+  }
     
     // If URL has a file extension, it's a missing static file -> 404
     if (/\.\w+$/.test(req.url)) {
