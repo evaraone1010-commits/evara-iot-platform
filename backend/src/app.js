@@ -19,10 +19,25 @@ const limiters = rlService.getLimiters();
 // CORS Configuration
 // ============================================================================
 function parseOriginList(value) {
+  const normalizeOrigin = (origin) => {
+    const trimmed = String(origin || '').trim().replace(/^['"]|['"]$/g, '');
+    if (!trimmed) return null;
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed.replace(/\/+$/, '');
+    }
+
+    if (/^[a-z0-9.-]+(?::\d+)?$/i.test(trimmed)) {
+      return `https://${trimmed}`;
+    }
+
+    return trimmed;
+  };
+
   return [...new Set(
     String(value || '')
       .split(',')
-      .map((origin) => origin.trim())
+      .map(normalizeOrigin)
       .filter(Boolean)
   )];
 }
