@@ -79,7 +79,7 @@ function initializeFirebase() {
 
       try {
         const testStart = Date.now();
-        await db.collection('__healthcheck__').limit(1).get();
+        await db.collection('healthcheck').limit(1).get();
         console.log(`[Firebase] ✅ Firestore connectivity OK (${Date.now() - testStart}ms)`);
       } catch (firestoreErr) {
         console.warn(`[Firebase] ⚠️ Firestore connectivity test failed: ${firestoreErr.message}`);
