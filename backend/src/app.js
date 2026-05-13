@@ -85,13 +85,14 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "https://fonts.googleapis.com"],
-      imgSrc: ["'self'", "https:", "data:"],
+      scriptSrc: ["'self'", "https://cdnjs.cloudflare.com"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
+      imgSrc: ["'self'", "https:", "data:", "https://cdnjs.cloudflare.com", "https://tile.openstreetmap.org"],
       connectSrc: [
         "'self'",
         "https://*.railway.app",
         "wss://*.railway.app",
+        "https://*.openstreetmap.org",
         "https://identitytoolkit.googleapis.com",
         "https://securetoken.googleapis.com",
         "https://www.googleapis.com",
@@ -205,7 +206,7 @@ app.get("*", (req, res, next) => {
       res.setHeader("Expires", "0");
       res.setHeader(
         "Content-Security-Policy",
-        "default-src 'self'; connect-src 'self' https://*.railway.app wss://*.railway.app https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://firebasestorage.googleapis.com;"
+        "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; img-src 'self' https: data: https://cdnjs.cloudflare.com https://tile.openstreetmap.org; connect-src 'self' https://*.railway.app wss://*.railway.app https://*.openstreetmap.org https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://firebasestorage.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'none'; object-src 'none';"
       );
       return res.sendFile(indexPath);
     }
